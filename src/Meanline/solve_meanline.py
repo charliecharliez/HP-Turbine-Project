@@ -1,6 +1,7 @@
 import json
 import math
 from pathlib import Path
+from scipy.optimize import brentq
 from boundary_conditions import boundary_conditions
 
 from .gas_props import GAS, GasProps
@@ -11,25 +12,57 @@ class Inputs:
     degree_of_reaction: float = 0.3
     N_shaft: float = 13000  # RPM
 
-    D_hub_stator: float = 0.69  # m
-    D_tip_stator: float = 0.79  # m
-
-    D_hub_rotor: float = 0.68  # m
-    D_tip_rotor: float = 0.79  # m
+    radius_2: float = 0.5 # m
+    radius_3: float = 0.6 # m
 
     #alpha_1: float = 0  # deg
     alpha_2: float = 71  # deg
-    Beta2_metal: float = 45  # deg
+    #Beta2_metal: float = 45  # deg
     Beta3_metal: float = 61  # deg
 
-    loss_kinetic_stator: float = 0.027 #assumed for now
+    loss_kinetic_stator: float = 0.027 # assumed for now
     loss_kinetic_rotor: float = 0.054 # assumed for now
 
-def _solve_states(gas: GasProps = GAS, inputs: Inputs=Inputs()):
+@dataclass
+class MeanlineResult:
+    residual: float  # kg/s, m_dot - m_dot_3
+    m_dot: float
+    P_s2: float  # bar
+    T_2: float
+    T_3: float
+    T_03: float
+    v_2: float
+    w_2: float
+    w_3: float
+    v_3: float
+    u_2: float
+    u_3: float
+    Beta2: float  # deg (unsigned)
+    alpha_3: float  # deg, signed (+ along rotation)
+    M_2: float
+    M_2rel: float
+    blade_height_2: float
+    blade_height_3: float
+    D_hub_2: float
+    D_tip_2: float
+    D_hub_3: float
+    D_tip_3: float
+    area_3: float
+    work_euler: float  # J/kg, u2*vtheta2 - u3*vtheta3
+    work_thermo: float  # J/kg, cp*(T_01 - T_03); must equal work_euler
+    eta_ts: float
+
+
+def _solve_states(blade_height_3: float, gas: GasProps = GAS, inputs: Inputs=Inputs()) -> MeanlineResult:
+
+
+    # angles (in velocity triangles) are measured starting fom the axial direction
 
     C_p = gas.C_p  # J/(kg*K) specific heat with constant pressure
     k = gas.gamma  # ratio of specific heats
     R = gas.R  # gas constant
+
+    m_dot = boundary_conditions.m_dot # mass flowrate in kg/s
 
     T_01 = boundary_conditions.T_01 # total temperature at inlet, Kelvin
     P_01 = boundary_conditions.P_01  # total pressure at inlet, bar
@@ -57,15 +90,25 @@ def _solve_states(gas: GasProps = GAS, inputs: Inputs=Inputs()):
     # total temp T_02 = T_02is since no work is done
     T_2 = T_02 - v_2**2 / (2 * C_p)  # Kelvin
 
+    # P = density * R * T
+    density_2 = P_s2 * 1e5 / (R * T_2) # kg/m^3 (pressures are in bar)
+    alpha_2 = math.radians(inputs.alpha_2)
+    
+    v_2a = v_2 * math.cos(alpha_2)
+    area_2 = m_dot / density_2 / v_2a # m^2
+
+    # A = pi * ((r_mean + h/2)^2 - (r_mean - h/2)^2)
+    blade_height_2 = area_2 / (2 * math.pi * inputs.radius_2)
+    D_hub_2, D_tip_2 = 2 * (inputs.radius_2 - blade_height_2/2), 2 * (inputs.radius_2 + blade_height_2/2)
+
     # isentropic relations
     P_02 = (T_02 / T_2) ** (k / (k - 1)) * P_s2
 
     # velocity triangle
     omega = inputs.N_shaft * (2 * math.pi) / 60  # angular speed rad/s
-    avg_stator_tip_radius = (inputs.D_hub_stator + inputs.D_tip_stator) / 4  # m
     # Even though the stator is not rotating, the meanline position is defined by stator geometry
-    u_2 = omega * avg_stator_tip_radius  # m/s
-    alpha_2 = math.radians(inputs.alpha_2)
+    u_2 = omega * inputs.radius_2  # m/s
+    
     w_2 = math.sqrt((v_2 * math.cos(alpha_2)) ** 2 + (v_2 * math.sin(alpha_2) - u_2) ** 2)
 
     M_2 = v_2 / math.sqrt(k * R * T_2)  # Mach number at station 2
@@ -85,8 +128,7 @@ def _solve_states(gas: GasProps = GAS, inputs: Inputs=Inputs()):
 
     T_02R = T_2 + w_2**2 / (2 * C_p)  # total temperature in relative frame of reference of the rotor
 
-    avg_rotor_tip_radius = (inputs.D_hub_rotor + inputs.D_tip_rotor) / 4  # m
-    u_3 = omega * avg_rotor_tip_radius  # m/s
+    u_3 = omega * inputs.radius_3  # m/s
     T_03R = T_02R + (u_3**2 - u_2**2) / (2 * C_p)
 
     # T_03Ris = T_03is + w_3is^2 / (2 * C_p)
@@ -101,24 +143,48 @@ def _solve_states(gas: GasProps = GAS, inputs: Inputs=Inputs()):
     v_3 = math.sqrt((w_3 * math.cos(Beta3)) ** 2 + (w_3 * math.sin(Beta3) - u_3) ** 2)
 
     alpha_3 = math.acos(w_3 * math.cos(Beta3) / v_3)
+    v_3a = v_3 * math.cos(alpha_3)
+    density_3 = P_s3 * 1e5 / (R * T_3) # kg / m^3 (pressures are in bar)
+    area_3 = math.pi * ((inputs.radius_3 + blade_height_3/2)**2 - (inputs.radius_3 - blade_height_3/2)**2)
+    residual = m_dot - density_3 * v_3a * area_3
 
-    # ------------------------Continuity equations to solve for mass flow---------------------------
-    stator_area = math.pi / 4 * (inputs.D_tip_stator**2 - inputs.D_hub_stator**2)
-    rotor_area = math.pi / 4 * (inputs.D_tip_rotor**2 - inputs.D_hub_rotor**2)
+    # Signed tangential velocities (+ along rotation) for the Euler cross-check.
+    # The unsigned acos() angles above lose the swirl direction.
+    v_theta_2 = v_2 * math.sin(alpha_2)
+    v_theta_3 = u_3 - w_3 * math.sin(Beta3)
+    T_03 = T_3 + v_3**2 / (2 * C_p)
+    work_euler = u_2 * v_theta_2 - u_3 * v_theta_3  # J/kg
+    work_thermo = C_p * (T_01 - T_03)  # J/kg
 
-    # Solve for density using ideal gas law
-    # bar * 10^5 / (J / kg / K * K) = kg / m^3
-    density_2 = P_s2 * 1e5 / (R * T_2)
-    density_3 = P_s3 * 1e5 / (R * T_3)
+    return MeanlineResult(
+        residual=residual,
+        m_dot=m_dot,
+        P_s2=P_s2, T_2=T_2, T_3=T_3, T_03=T_03,
+        v_2=v_2, w_2=w_2, w_3=w_3, v_3=v_3, u_2=u_2, u_3=u_3,
+        Beta2=Beta2, alpha_3=math.degrees(math.atan2(v_theta_3, v_3a)),
+        M_2=M_2, M_2rel=M_2rel,
+        blade_height_2=blade_height_2, blade_height_3=blade_height_3,
+        D_hub_2=D_hub_2, D_tip_2=D_tip_2,
+        D_hub_3=2 * (inputs.radius_3 - blade_height_3 / 2),
+        D_tip_3=2 * (inputs.radius_3 + blade_height_3 / 2),
+        area_3=area_3,
+        work_euler=work_euler, work_thermo=work_thermo,
+        eta_ts=work_thermo / (C_p * T_01 * (1 - (P_s3 / P_01) ** ((k - 1) / k))),
+    )
 
-    # Meridional velocities (normal to areas)
-    v_2m = math.cos(alpha_2) * v_2
-    v_3m = math.cos(alpha_3) * v_3
 
-    # Mass flow
-    m_dot_2 = v_2m * stator_area * density_2
-    m_dot_3 = v_3m * rotor_area * density_3
+def solve_meanline(gas: GasProps = GAS, inputs: Inputs = Inputs()) -> MeanlineResult:
+    """Size the rotor exit blade height so mass flow at station 3 equals m_dot.
 
-    residual = m_dot_2 - m_dot_3
+    Radii and degree of reaction are inputs; the unknown is blade_height_3.
+    """
+    def residual(h):
+        return _solve_states(h, gas, inputs).residual
 
-    return residual
+    # residual(0) = +m_dot; it goes negative once the annulus can pass more than m_dot.
+    h_max = 2 * inputs.radius_3  # hub radius -> 0
+    if residual(h_max) > 0:
+        raise ValueError("Cannot pass m_dot through the rotor exit even with hub radius 0; "
+                         "check radius_3 / angles / reaction.")
+    h_3 = brentq(residual, 1e-6, h_max, xtol=1e-12)
+    return _solve_states(h_3, gas, inputs)
