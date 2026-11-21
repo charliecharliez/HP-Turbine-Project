@@ -24,24 +24,45 @@ References
 ----------
 Kacker & Okapuu, ASME J. Eng. Power 104 (1982) 111-119.
 Ainley & Mathieson, ARC R&M 2974 (1951); Dunham & Came, ASME J. Eng. Power (1970).
-Aungier, Turbine Aerodynamics, ASME Press (2006), ch. 7 (curve fits of AM charts).
+Chart data (Losses/data/ko_fig*.csv): KO 1982 Figs. 1, 2 and 14 as digitized
+in NASA turbo-design, references/Turbines/KackerOkapuu
+(https://github.com/nasa/turbo-design), checked against the figure images.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+from pathlib import Path
 import numpy as np
 
 from Meanline.gas_props import GAS, GasProps
 
 # ---------------------------------------------------------------------------
-# Curve-fit data you MUST verify against the KO paper before trusting results
+# Digitized KO 1982 charts
 # ---------------------------------------------------------------------------
-# KO Fig. (trailing-edge energy coefficient Delta-phi^2 vs t_TE/o).
-# PLACEHOLDER values of the right shape and magnitude: digitize the paper's
-# two curves and replace these arrays.
-TE_T_O = np.array([0.0, 0.1, 0.2, 0.3, 0.4])
-TE_DPHI2_NOZZLE = np.array([0.0, 0.009, 0.025, 0.047, 0.075])   # beta1 = 0
-TE_DPHI2_IMPULSE = np.array([0.0, 0.016, 0.044, 0.083, 0.130])  # beta1 = alpha2
+_DATA = Path(__file__).with_name('data')
+
+
+def _load(name):
+    return np.loadtxt(_DATA / name, delimiter=',', skiprows=1)
+
+
+def _curves(table):
+    """Split an (s/c, Yp, alpha2) table into {alpha2: (s/c sorted, Yp)}."""
+    out = {}
+    for a in np.unique(table[:, 2]):
+        c = table[table[:, 2] == a]
+        c = c[np.argsort(c[:, 0])]
+        out[float(a)] = (c[:, 0], c[:, 1])
+    return out
+
+
+# Fig. 1: Yp vs s/c for beta1 = 0 (axial-entry nozzle), tmax/c = 0.2, alpha2 = 40..80 deg
+FIG01_NOZZLE = _curves(_load('ko_fig01_yp_nozzle.csv'))
+# Fig. 2: Yp vs s/c for beta1 = alpha2 (impulse), tmax/c = 0.2, alpha2 = 40..70 deg
+FIG02_IMPULSE = _curves(_load('ko_fig02_yp_impulse.csv'))
+# Fig. 14: trailing-edge energy coefficient Delta-phi^2 vs t_TE/o (0..0.4)
+FIG14_NOZZLE = _load('ko_fig14_te_nozzle.csv')     # axial-entry nozzle (beta1 = 0)
+FIG14_IMPULSE = _load('ko_fig14_te_impulse.csv')   # impulse blading (beta1 = alpha2)
 
 # KO hub-to-mean inlet Mach ratio: M1h/M1 = 1 + K * |rh/rt - 1|^2.2.
 # Only used when the spanwise module does not supply M_in_hub. Verify K.
@@ -85,8 +106,8 @@ class RowFlow:
 
 @dataclass
 class LossOptions:
-    supersonic_model: str = 'normal_shock'  # 'normal_shock' or 'none'
-    supersonic_factor: float = 1.0          # fraction of normal-shock loss (1 = upper bound)
+    supersonic_model: str = 'ko'            # 'ko' (f_Ma on Yp), 'normal_shock' or 'none'
+    supersonic_factor: float = 1.0          # 'normal_shock' only: fraction of normal-shock loss
 
 
 @dataclass
@@ -96,13 +117,15 @@ class RowLoss:
     Y_shock_hub: float      # 0.914 * Y_shock * f(Re)   (KO inlet/hub shock term)
     Y_secondary: float
     Y_trailing_edge: float
-    Y_supersonic: float     # trailing-edge shock system for M_out > 1 (beyond KO)
+    Y_supersonic: float     # supersonic-exit loss, M_out > 1: (f_Ma - 1) * Yp for 'ko'
     Y_tip: float            # shrouded rotors only (Y form)
     Y_total: float          # total-pressure loss coefficient of the row
     xi: float               # equivalent kinetic-energy loss coefficient (meanline input)
     deta_tip: float         # unshrouded rotors: fractional efficiency debit
     Kp: float
     f_Re: float
+    f_Ma: float
+    notes: tuple = ()       # inputs outside the digitized chart ranges (values clamped)
 
     def as_dict(self):
         return asdict(self)
@@ -142,27 +165,32 @@ def zweifel_pitch_chord(angle_in, angle_out, axial_chord_ratio, zweifel=0.8):
 # ---------------------------------------------------------------------------
 # Kacker-Okapuu components
 # ---------------------------------------------------------------------------
-def yp_nozzle(sc, a2):
-    """AM profile loss, beta1 = 0 (Aungier fit). a2 in deg (magnitude)."""
-    sc_min = 0.46 + a2 / 77 if a2 <= 30 else 0.614 + a2 / 130
-    X = sc - sc_min
-    A = 0.025 + (27 - a2) / 530 if a2 <= 27 else 0.025 + (27 - a2) / 3085
-    B = 0.1583 - a2 / 1640
-    if a2 <= 30:
-        C = 0.08 * ((a2 / 30)**2 - 1)
-        return A + B * X**2 + C * X**3
-    n = 1 + a2 / 30
-    return A + B * abs(X)**n
+def _chart(curves, sc, a2, label, notes):
+    """Yp from a family of digitized curves: linear in s/c along each alpha2
+    curve, then linear in alpha2. Outside the digitized range values are
+    clamped to the nearest curve end and a note is recorded."""
+    angles = sorted(curves)
+    if not angles[0] <= a2 <= angles[-1]:
+        notes.append(f'{label}: alpha2 = {a2:.1f} deg outside {angles[0]:g}-{angles[-1]:g}')
+    vals = []
+    for a in angles:
+        x, y = curves[a]
+        vals.append(np.interp(sc, x, y))
+    lo = max(curves[a][0][0] for a in angles)
+    hi = min(curves[a][0][-1] for a in angles)
+    if not lo <= sc <= hi:
+        notes.append(f'{label}: s/c = {sc:.3f} outside {lo:.2f}-{hi:.2f}')
+    return float(np.interp(a2, angles, vals))
 
 
-def yp_impulse(sc, a2):
-    """AM profile loss, beta1 = alpha2 (Aungier fit). a2 in deg (magnitude)."""
-    sc_min = 0.224 + 1.575 * (a2 / 90) - (a2 / 90)**2
-    X = sc - sc_min
-    A = 0.242 - a2 / 151 + (a2 / 127)**2
-    B = 0.3 + (30 - a2) / 50 if a2 <= 30 else 0.3 + (30 - a2) / 275
-    C = 0.88 - a2 / 42.4 + (a2 / 72.8)**2
-    return A + B * X**2 - C * X**3
+def yp_nozzle(sc, a2, notes=None):
+    """AM/KO profile loss for beta1 = 0, tmax/c = 0.2 (KO Fig. 1). a2 in deg."""
+    return _chart(FIG01_NOZZLE, sc, a2, 'Fig. 1', [] if notes is None else notes)
+
+
+def yp_impulse(sc, a2, notes=None):
+    """AM/KO profile loss for beta1 = alpha2, tmax/c = 0.2 (KO Fig. 2). a2 in deg."""
+    return _chart(FIG02_IMPULSE, sc, a2, 'Fig. 2', [] if notes is None else notes)
 
 
 def _f_reynolds(Re):
@@ -174,7 +202,7 @@ def _f_reynolds(Re):
 
 
 def _kp(M1, M2):
-    K1 = 1.0 if M2 <= 0.2 else 1 - 1.25 * (M2 - 0.2)
+    K1 = 1.0 if M2 <= 0.2 else max(0.0, 1 - 1.25 * (M2 - 0.2))   # K1 = 0 for M2 > 1
     K2 = (M1 / M2)**2
     return 1 - K2 * (1 - K1)
 
@@ -191,10 +219,13 @@ def _y_shock_hub(flow, geo, g):
     return rh_rt * dY * (flow.P_in / flow.P_out) * ratio
 
 
-def _y_trailing_edge(t_o, b1, a2, M2, g):
+def _y_trailing_edge(t_o, b1, a2, M2, g, notes):
+    if not 0 <= t_o <= 0.4:
+        notes.append(f'Fig. 14: t_TE/o = {t_o:.3f} outside 0-0.4')
     r = b1 / a2
-    d_n = np.interp(t_o, TE_T_O, TE_DPHI2_NOZZLE)
-    d_i = np.interp(t_o, TE_T_O, TE_DPHI2_IMPULSE)
+    # max(0, .) removes small negative digitizing noise near t/o = 0
+    d_n = max(0.0, np.interp(t_o, FIG14_NOZZLE[:, 0], FIG14_NOZZLE[:, 1]))
+    d_i = max(0.0, np.interp(t_o, FIG14_IMPULSE[:, 0], FIG14_IMPULSE[:, 1]))
     dphi2 = d_n + abs(r) * r * (d_i - d_n)
     k = (g - 1) / 2 * M2**2
     num = (1 - k * (1 / (1 - dphi2) - 1))**(-g / (g - 1)) - 1
@@ -202,12 +233,17 @@ def _y_trailing_edge(t_o, b1, a2, M2, g):
     return num / den
 
 
-def _y_supersonic(M2, g, opts):
-    """Trailing-edge shock loss for supersonic exit. KO's Kp was built for
-    subsonic exits, so this is added explicitly. Default: a fraction of the
-    normal-shock total-pressure loss at M2 (factor = 1 is an upper bound,
-    because the real TE shocks are oblique). Replace with your chosen model."""
-    if opts.supersonic_model == 'none' or M2 <= 1.0:
+def _f_mach(M2):
+    """Supersonic-exit correction on the profile loss (KO as implemented in
+    TurboFlow): f_Ma = 1 + 60 (M2 - 1)^2 for M2 > 1."""
+    return 1.0 if M2 <= 1.0 else 1 + 60 * (M2 - 1)**2
+
+
+def _y_normal_shock(M2, g, opts):
+    """Alternative supersonic-exit loss: a fraction of the normal-shock
+    total-pressure loss at M2 (factor = 1 is an upper bound, because the real
+    trailing-edge shocks are oblique)."""
+    if M2 <= 1.0:
         return 0.0
     M = M2
     p0r = (((g + 1) * M**2 / ((g - 1) * M**2 + 2))**(g / (g - 1))
@@ -226,7 +262,9 @@ def row_loss(geo: RowGeometry, flow: RowFlow, opts: LossOptions = LossOptions())
     # --- profile ---
     ratio = b1 / a2
     tc = np.clip(geo.tmax_chord, 0.15, 0.25)          # KO validity range
-    yn, yi = yp_nozzle(geo.pitch_chord, a2), yp_impulse(geo.pitch_chord, a2)
+    notes = []
+    yn = yp_nozzle(geo.pitch_chord, a2, notes)
+    yi = yp_impulse(geo.pitch_chord, a2, notes) if ratio != 0 else yn   # unused when beta1 = 0
     Yp_amdc = (yn + abs(ratio) * ratio * (yi - yn)) * (tc / 0.2)**ratio
     Kp = _kp(flow.M_in, flow.M_out)
     fRe = _f_reynolds(flow.Re)
@@ -244,8 +282,15 @@ def row_loss(geo: RowGeometry, flow: RowFlow, opts: LossOptions = LossOptions())
     Y_sec = 1.2 * Ys_amdc * Ks
 
     # --- trailing edge and supersonic exit ---
-    Y_te = _y_trailing_edge(geo.te_throat, b1, a2, flow.M_out, g)
-    Y_ss = _y_supersonic(flow.M_out, g, opts)
+    Y_te = _y_trailing_edge(geo.te_throat, b1, a2, flow.M_out, g, notes)
+    fMa = 1.0
+    if opts.supersonic_model == 'ko':
+        fMa = _f_mach(flow.M_out)
+        Y_ss = (fMa - 1) * (Y_prof + Y_sh)      # Y = f_Re * f_Ma * Yp, split out for reporting
+    elif opts.supersonic_model == 'normal_shock':
+        Y_ss = _y_normal_shock(flow.M_out, g, opts)
+    else:
+        Y_ss = 0.0
 
     # --- tip clearance ---
     Y_tip, deta = 0.0, 0.0
@@ -259,7 +304,8 @@ def row_loss(geo: RowGeometry, flow: RowFlow, opts: LossOptions = LossOptions())
 
     Y_tot = Y_prof + Y_sh + Y_sec + Y_te + Y_ss + Y_tip
     xi = kinetic_loss_from_Y(Y_tot, flow.M_out, g)
-    return RowLoss(flow.kind, Y_prof, Y_sh, Y_sec, Y_te, Y_ss, Y_tip, Y_tot, xi, deta, Kp, fRe)
+    return RowLoss(flow.kind, Y_prof, Y_sh, Y_sec, Y_te, Y_ss, Y_tip, Y_tot, xi, deta, Kp, fRe, fMa,
+                   tuple(notes))
 
 
 def apply_tip_clearance(eta, row_losses):
@@ -271,12 +317,15 @@ def apply_tip_clearance(eta, row_losses):
 
 def print_breakdown(row_losses, names=None):
     keys = ['Y_profile', 'Y_shock_hub', 'Y_secondary', 'Y_trailing_edge',
-            'Y_supersonic', 'Y_tip', 'Y_total', 'xi', 'deta_tip', 'Kp', 'f_Re']
+            'Y_supersonic', 'Y_tip', 'Y_total', 'xi', 'deta_tip', 'Kp', 'f_Re', 'f_Ma']
     names = names or [rl.kind for rl in row_losses]
     print(f'{"Loss component":<18}' + ''.join(f'{n:>12}' for n in names))
     print('-' * (18 + 12 * len(names)))
     for k in keys:
         print(f'{k:<18}' + ''.join(f'{getattr(rl, k):12.4f}' for rl in row_losses))
+    for n, rl in zip(names, row_losses):
+        for note in rl.notes:
+            print(f'NOTE ({n}): {note}')
 
 
 # ---------------------------------------------------------------------------
