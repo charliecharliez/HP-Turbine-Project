@@ -1,12 +1,30 @@
 import json
 import math
 from pathlib import Path
+from boundary_conditions import boundary_conditions
 
 from .gas_props import GAS, GasProps
-from .setpoints import SETPOINTS, Setpoints
 from dataclasses import dataclass, field
 
-def _solve_states(r: float, gas: GasProps = GAS, sp: Setpoints = SETPOINTS) -> tuple[float, dict]:
+@dataclass
+class Inputs:    
+    N_shaft: float = 13000  # RPM
+
+    D_hub_stator: float = 0.69  # m
+    D_tip_stator: float = 0.79  # m
+
+    D_hub_rotor: float = 0.68  # m
+    D_tip_rotor: float = 0.79  # m
+
+    alpha_1: float = 0  # deg
+    alpha_2: float = 71  # deg
+    Beta2_metal: float = 45  # deg
+    Beta3_metal: float = 61  # deg
+
+    loss_kinetic_stator: float = 0.027
+    loss_kinetic_rotor: float = 0.054
+
+def _solve_states(r: float, gas: GasProps = GAS, inputs: Inputs=Inputs()) -> tuple[float, dict]:
     """Meanline states for degree of reaction r.
 
     Returns (residual, solution), where residual = m_dot_2 - m_dot_3 [kg/s] and
@@ -21,9 +39,9 @@ def _solve_states(r: float, gas: GasProps = GAS, sp: Setpoints = SETPOINTS) -> t
     k = gas.gamma  # ratio of specific heats
     R = gas.R  # gas constant
 
-    T_01 = sp.T_01  # total temperature at inlet, Kelvin
-    P_01 = sp.P_01  # total pressure at inlet, bar
-    P_s3 = P_01 / sp.pressure_ratio  # static pressure at exit, bar
+    T_01 = boundary_conditions.T_01 # total temperature at inlet, Kelvin
+    P_01 = boundary_conditions.P_01  # total pressure at inlet, bar
+    P_s3 = P_01 / boundary_conditions.pressure_ratio_TS  # static pressure at exit, bar
 
     # static pressure at stator exit, depends on degree of reaction
     P_s2 = (1 - (1 - r) * (1 - (P_s3 / P_01) ** ((k - 1) / k))) ** (k / (k - 1)) * P_01
@@ -44,7 +62,7 @@ def _solve_states(r: float, gas: GasProps = GAS, sp: Setpoints = SETPOINTS) -> t
 
     # use kinematic loss of stator to find true v_2
     # loss = 1 - v^2 / v_is^2
-    v_2 = math.sqrt(1 - sp.loss_kinetic_stator) * v_2is
+    v_2 = math.sqrt(1 - inputs.loss_kinetic_stator) * v_2is
     solution['v_2'] = (v_2, 'm/s')
 
     # use total temp T0 = Ts + v^2 / (2*C_p) again to solve for non-isentropic static T_2
@@ -57,12 +75,12 @@ def _solve_states(r: float, gas: GasProps = GAS, sp: Setpoints = SETPOINTS) -> t
     solution['P_02'] = (P_02, 'bar')
 
     # velocity triangle
-    omega = sp.N_shaft * (2 * math.pi) / 60  # angular speed rad/s
-    avg_stator_tip_radius = (sp.D_hub_stator + sp.D_tip_stator) / 4  # m
+    omega = inputs.N_shaft * (2 * math.pi) / 60  # angular speed rad/s
+    avg_stator_tip_radius = (inputs.D_hub_stator + inputs.D_tip_stator) / 4  # m
     # Even though the stator is not rotating, the meanline position is defined by stator geometry
     u_2 = omega * avg_stator_tip_radius  # m/s
     solution['u_2'] = (u_2, 'm/s')
-    alpha_2 = math.radians(sp.alpha_2)
+    alpha_2 = math.radians(inputs.alpha_2)
     w_2 = math.sqrt((v_2 * math.cos(alpha_2)) ** 2 + (v_2 * math.sin(alpha_2) - u_2) ** 2)
     solution['w_2'] = (w_2, 'm/s')
 
@@ -89,7 +107,7 @@ def _solve_states(r: float, gas: GasProps = GAS, sp: Setpoints = SETPOINTS) -> t
     T_02R = T_2 + w_2**2 / (2 * C_p)  # total temperature in relative frame of reference of the rotor
     solution['T_02R'] = (T_02R, 'K')
 
-    avg_rotor_tip_radius = (sp.D_hub_rotor + sp.D_tip_rotor) / 4  # m
+    avg_rotor_tip_radius = (inputs.D_hub_rotor + inputs.D_tip_rotor) / 4  # m
     u_3 = omega * avg_rotor_tip_radius  # m/s
     solution['u_3'] = (u_3, 'm/s')
     T_03R = T_02R + (u_3**2 - u_2**2) / (2 * C_p)
@@ -100,12 +118,12 @@ def _solve_states(r: float, gas: GasProps = GAS, sp: Setpoints = SETPOINTS) -> t
     w_3is = math.sqrt(2 * C_p * (T_03R - T_3is))
     solution['w_3is'] = (w_3is, 'm/s')
     # use kinematic loss to find w_3
-    w_3 = math.sqrt(1 - sp.loss_kinetic_rotor) * w_3is
+    w_3 = math.sqrt(1 - inputs.loss_kinetic_rotor) * w_3is
     solution['w_3'] = (w_3, 'm/s')
     T_3 = T_03R - w_3**2 / (2 * C_p)  # definition of total temperature
     solution['T_3'] = (T_3, 'K')
 
-    Beta3 = math.radians(sp.Beta3_metal)  # geometric parameter, reasonably accurate
+    Beta3 = math.radians(inputs.Beta3_metal)  # geometric parameter, reasonably accurate
 
     v_3 = math.sqrt((w_3 * math.cos(Beta3)) ** 2 + (w_3 * math.sin(Beta3) - u_3) ** 2)
     solution['v_3'] = (v_3, 'm/s')
@@ -114,8 +132,8 @@ def _solve_states(r: float, gas: GasProps = GAS, sp: Setpoints = SETPOINTS) -> t
     solution['alpha_3'] = (math.degrees(alpha_3), 'deg')
 
     # ------------------------Continuity equations to solve for mass flow---------------------------
-    stator_area = math.pi / 4 * (sp.D_tip_stator**2 - sp.D_hub_stator**2)
-    rotor_area = math.pi / 4 * (sp.D_tip_rotor**2 - sp.D_hub_rotor**2)
+    stator_area = math.pi / 4 * (inputs.D_tip_stator**2 - inputs.D_hub_stator**2)
+    rotor_area = math.pi / 4 * (inputs.D_tip_rotor**2 - inputs.D_hub_rotor**2)
 
     solution['stator_area'] = (stator_area, 'm^2')
     solution['rotor_area'] = (rotor_area, 'm^2')
@@ -169,14 +187,14 @@ class SolveResult:
 
 def Solve(
     gas: GasProps = GAS,
-    sp: Setpoints = SETPOINTS,
+    inputs: Inputs = Inputs,
     guess_low: float = 0,
     guess_high: float = 1,
     tol: float = 10**-CONVERGENCE_CRITERIA_ORDER,
 ) -> SolveResult:
     """Bisect on degree of reaction until stator and rotor mass flows match."""
-    residual_high, _ = _solve_states(guess_high, gas, sp)
-    residual_low, _ = _solve_states(guess_low, gas, sp)
+    residual_high, _ = _solve_states(guess_high, gas, inputs)
+    residual_low, _ = _solve_states(guess_low, gas, inputs)
 
     if math.copysign(1, residual_high) == math.copysign(1, residual_low):
         raise ValueError('No root bracketed')
@@ -187,7 +205,7 @@ def Solve(
     while True:
         iter_count += 1
         guess = (guess_high + guess_low) / 2
-        residual, solution = _solve_states(guess, gas, sp)
+        residual, solution = _solve_states(guess, gas, inputs)
         residuals.append(residual)
 
         if abs(residual) < tol:
@@ -212,8 +230,8 @@ def main():
     print(result.solution['P_s2'])
 
     # cache the solution so other scripts can skip the solve
-    save_solution(result.solution)
-    print(f'Saved solution to {SOLUTION_CACHE}')
+    #save_solution(result.solution)
+    #print(f'Saved solution to {SOLUTION_CACHE}')
 
 if __name__ == '__main__':
     main()

@@ -2,12 +2,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class BC:
-	p_01 = 20 # bar
+	P_01 = 20 # bar
 	T_01 = 1850 # K
 	m_dot = 30 # kg/s
 	pressure_ratio_TS = 4.1 # turbine total to static pressure ratio from inlet to exit
 
-	p_0_coolant = 21 # bar
+	P_0_coolant = 21 # bar
 	T_0_coolant = 750 # K
 
 	rotor_tip_clearance_ratio = 1e-2 # clearance is 1% of blade height

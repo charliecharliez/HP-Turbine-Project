@@ -5,7 +5,7 @@ from boundary_conditions import boundary_conditions
 
 # Inlet state (total) and isentropic exit state (static), from the setpoints
 T_IN = boundary_conditions.T_01  # K
-P_IN = boundary_conditions.p_01 * 1e-5  # convert Pa to bar
+P_IN = boundary_conditions.P_01 * 1e-5  # convert Pa to bar
 P_OUT = P_IN / boundary_conditions.pressure_ratio_TS  # Pa, exit static pressure
 S_IN = CoolProp.PropsSI("SMASS", "T", T_IN, "P", P_IN, "Air")
 T_OUT_S = CoolProp.PropsSI("T", "P", P_OUT, "SMASS", S_IN, "Air")  # K, isentropic exit
