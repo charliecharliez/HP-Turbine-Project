@@ -1,8 +1,10 @@
 import json
 import math
 from pathlib import Path
+import matplotlib.pyplot as plt
 from scipy.optimize import brentq
 from boundary_conditions import boundary_conditions
+from velocity_triangle import VelocityTriangle
 
 from .gas_props import GAS, GasProps
 from dataclasses import dataclass, field
@@ -173,13 +175,13 @@ def _solve_states(blade_height_3: float, gas: GasProps = GAS, inputs: Inputs=Inp
     )
 
 
-def solve_meanline(gas: GasProps = GAS, inputs: Inputs = Inputs()) -> MeanlineResult:
+def solve_meanline(inputs: Inputs = Inputs()) -> MeanlineResult:
     """Size the rotor exit blade height so mass flow at station 3 equals m_dot.
 
     Radii and degree of reaction are inputs; the unknown is blade_height_3.
     """
     def residual(h):
-        return _solve_states(h, gas, inputs).residual
+        return _solve_states(h, GAS, inputs).residual
 
     # residual(0) = +m_dot; it goes negative once the annulus can pass more than m_dot.
     h_max = 2 * inputs.radius_3  # hub radius -> 0
@@ -187,4 +189,19 @@ def solve_meanline(gas: GasProps = GAS, inputs: Inputs = Inputs()) -> MeanlineRe
         raise ValueError("Cannot pass m_dot through the rotor exit even with hub radius 0; "
                          "check radius_3 / angles / reaction.")
     h_3 = brentq(residual, 1e-6, h_max, xtol=1e-12)
-    return _solve_states(h_3, gas, inputs)
+    return _solve_states(h_3, GAS, inputs)
+
+def plot_velocity_triangles(result: MeanlineResult) -> None:
+    """Show the velocity triangles at station 2 (stator exit / rotor inlet) and
+    station 3 (rotor exit) in one plot, with C, W and C_m of both starting from
+    a common apex (station 2 solid, station 3 dashed).
+
+    Each triangle is built from the magnitudes u, v and w, so the signs of the
+    flow angles follow from the geometry rather than from the unsigned Beta2.
+    """
+    station_2 = VelocityTriangle.from_U_C_W(result.u_2, result.v_2, result.w_2, station=2)
+    station_3 = VelocityTriangle.from_U_C_W(result.u_3, result.v_3, result.w_3, station=3)
+    VelocityTriangle.plot_combined(
+        station_2, station_3,
+        title="Meanline velocity triangles: station 2 (rotor inlet) and station 3 (rotor exit)")
+    plt.show()
