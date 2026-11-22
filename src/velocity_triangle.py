@@ -1,5 +1,8 @@
 """Velocity triangles for turbomachinery, plotted with matplotlib.
 
+THIS CODE IS NOT RELEVANT TO THE DESIGN METHODOLOGY FOR THIS TURBINE PROJECT
+ITS SOLE PURPOSE IS PLOTTING
+
 A velocity triangle relates the absolute flow velocity C, the relative flow
 velocity W seen by the blade, and the blade speed U through C = W + U.
 
@@ -500,12 +503,3 @@ def _segment_hits(p, q, box):
             if t0 > t1:
                 return False
     return True
-
-
-if __name__ == "__main__":
-    # Rotor inlet and exit of the meanline design (see Meanline/solve_meanline.py).
-    rotor_in = VelocityTriangle.from_U_C_alpha(680.7, 931.9, 71.0, station=2)
-    rotor_out = VelocityTriangle.from_U_W_beta(816.8, 826.0, -61.0, station=3)
-    rotor_in.plot()
-    VelocityTriangle.plot_combined(rotor_in, rotor_out)
-    plt.show()
