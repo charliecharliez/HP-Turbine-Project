@@ -1,0 +1,67 @@
+{
+  "assumptions": [
+    "The meanline solver uses its current constant-property gas model and configured kinetic-loss inputs.",
+    "The model execution status does not certify design feasibility."
+  ],
+  "converged": true,
+  "error": null,
+  "input_snapshot": {
+    "boundary_conditions": {
+      "coolant_total_pressure_pa": 2100000.0,
+      "coolant_total_temperature_k": 750,
+      "inlet_total_pressure_pa": 2000000.0,
+      "inlet_total_temperature_k": 1850,
+      "main_mass_flow_kg_s": 30,
+      "max_mean_blade_speed_m_s": 500,
+      "max_metal_temperature_k": 1250,
+      "max_rotor_exit_an2_m2_rpm2": 32000000.0,
+      "rotor_tip_clearance_ratio": 0.01,
+      "total_to_static_pressure_ratio": 4.1
+    },
+    "meanline_inputs": {
+      "degree_of_reaction": 0.3,
+      "radius_2_m": 0.5,
+      "radius_3_m": 0.6,
+      "rotor_exit_metal_angle_deg": 61,
+      "rotor_kinetic_loss_fraction": 0.054,
+      "shaft_speed_rpm": 13000,
+      "stator_exit_angle_deg": 71,
+      "stator_kinetic_loss_fraction": 0.027
+    }
+  },
+  "result": {
+    "euler_specific_work_j_kg": 522913.748987986,
+    "mass_flow_kg_s": 30,
+    "mass_flow_residual_kg_s": -3.339550858072471e-13,
+    "mass_flow_residual_tolerance_kg_s": 1e-06,
+    "rotor_exit_absolute_flow_angle_deg": 13.24269527809728,
+    "rotor_exit_absolute_speed_m_s": 411.4618074245031,
+    "rotor_exit_annulus_area_m2": 0.059522792672757105,
+    "rotor_exit_blade_height_m": 0.01578891113417217,
+    "rotor_exit_blade_speed_m_s": 816.8140899333463,
+    "rotor_exit_hub_diameter_m": 1.1842110888658277,
+    "rotor_exit_relative_speed_m_s": 826.139565670287,
+    "rotor_exit_static_temperature_k": 1350.4440768830932,
+    "rotor_exit_tip_diameter_m": 1.2157889111341722,
+    "rotor_exit_total_temperature_k": 1420.0459664326345,
+    "rotor_inlet_relative_flow_angle_deg_unsigned": 33.47281673116678,
+    "rotor_inlet_relative_mach": 0.4856952677680672,
+    "rotor_inlet_relative_speed_m_s": 363.8047561201134,
+    "stator_exit_absolute_mach": 1.2444138976269286,
+    "stator_exit_absolute_speed_m_s": 932.1146912117589,
+    "stator_exit_blade_height_m": 0.017194810726682795,
+    "stator_exit_blade_speed_m_s": 680.6784082777885,
+    "stator_exit_hub_diameter_m": 0.9828051892733172,
+    "stator_exit_static_pressure_pa": 784193.3334184602,
+    "stator_exit_static_temperature_k": 1492.8088606341166,
+    "stator_exit_tip_diameter_m": 1.0171948107266828,
+    "thermodynamic_specific_work_j_kg": 522913.74898798583,
+    "total_to_static_efficiency": 0.8198459031839664
+  },
+  "run_id": "517bfe45-ceb6-4ad0-8b3e-f31d380d7a14",
+  "schema_version": 1,
+  "status": "succeeded",
+  "warnings": [
+    "This is the single-stage meanline prototype; integrated cooling and all hardware-limit checks are not yet part of this run."
+  ]
+}

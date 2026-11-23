@@ -13,25 +13,26 @@ Create a modular, iterative pipeline for a cooled, transonic high-pressure turbi
 
 The repository has a single-stage meanline prototype and velocity-triangle plotting, a radial-equilibrium module, loss correlations, and parametric airfoil geometry with an interactive visualizer. These are not integrated into a validated cooled-design pipeline. In particular:
 
-- The loss module currently looks for charts in `src/Losses/data`, while the charts are in `src/Losses/ko_charts`.
-- The gas-property code passes the wrong pressure units to CoolProp. The default blade speeds also exceed the specified 500 m/s limit.
-- The instructions specify a maximum rotor-exit AN2 of **3.2 x 10^7 m^2 rpm^2**, while the current boundary-condition constant is **3.2 x 10^-7**.
+- The loss module now loads charts from `src/Losses/ko_charts`; focused tests confirm all four charts load and representative interpolation works.
+- The gas-property code now converts inlet pressure from bar to Pa before calling CoolProp, with focused regression coverage. The default blade speeds still exceed the specified 500 m/s limit.
+- The boundary-condition AN2 constant now matches the specified maximum rotor-exit AN2 of **3.2 x 10^7 m^2 rpm^2**. Enforcing the limit for each rotor and validating passing and failing cases remain outstanding.
 - The instructions additionally require metal-temperature-limited cooling, a stage-count/flow-coefficient/reaction study, and an AMBRA test proposal. These are not yet a complete workflow.
+- Part A now has a requirements matrix, shared design conventions and validated data models, engineering-invariant tests, and a single-stage meanline runner with JSON run records. The runner reports solver success only; it does not claim that a design meets hardware or cooling constraints.
 - Treat numerical output from the current prototype as preliminary; it must be rechecked after corrections and validation.
 
 ## A. Requirements and foundations
 
-- **A01 - Translate the project instructions into a requirements checklist.** Record boundary conditions, constraints, mandatory outputs, optional work and acceptance evidence. **Done when:** every required report item maps to one or more roadmap tasks and a verification method.
-- **A02 - Define stations, frames, sign conventions and units.** Agree on stage/row station numbering, velocity-angle signs, absolute versus relative quantities, pressure units, coolant-flow bases and efficiency definitions. **Done when:** the conventions are explicit and usable across modules.
-- **A03 - Design shared inputs and results.** Define modular data structures for boundary conditions, stage and row inputs, flow states, geometry, losses, coolant and results; support one or two stages without hard-coding the selected design. **Done when:** interfaces can carry the information needed by the downstream tasks without hiding units or assumptions.
-- **A04 - Establish verification cases and test workflow.** Choose small, physically interpretable cases and references for conservation, unit conversion, limiting behavior and cross-module checks. **Done when:** focused automated tests can be run reproducibly, without relying on final hardware dimensions.
-- **A05 - Make runs reproducible and errors visible.** Define how to run modules and record inputs, assumptions, warnings, convergence status and results; reject invalid or infeasible designs explicitly. **Done when:** another user can repeat a run and distinguish failure from a valid result.
+- **A01 - Translate the project instructions into a requirements checklist.** Record boundary conditions, constraints, mandatory outputs, optional work and acceptance evidence. **Status:** complete. **Done when:** every required report item maps to one or more roadmap tasks and a verification method.
+- **A02 - Define stations, frames, sign conventions and units.** Agree on stage/row station numbering, velocity-angle signs, absolute versus relative quantities, pressure units, coolant-flow bases and efficiency definitions. **Status:** complete. **Done when:** the conventions are explicit and usable across modules.
+- **A03 - Design shared inputs and results.** Define modular data structures for boundary conditions, stage and row inputs, flow states, geometry, losses, coolant and results; support one or two stages without hard-coding the selected design. **Status:** complete. **Done when:** interfaces can carry the information needed by the downstream tasks without hiding units or assumptions.
+- **A04 - Establish verification cases and test workflow.** Choose small, physically interpretable cases and references for conservation, unit conversion, limiting behavior and cross-module checks. **Status:** complete. **Done when:** focused automated tests can be run reproducibly, without relying on final hardware dimensions.
+- **A05 - Make runs reproducible and errors visible.** Define how to run modules and record inputs, assumptions, warnings, convergence status and results; reject invalid or infeasible designs explicitly. **Status:** runner and run-record foundation complete; explicit design-feasibility rejection remains open pending constraint enforcement in B02 and relevant downstream tasks. **Done when:** another user can repeat a run and distinguish failure from a valid result.
 
 ## B. Repair and validate existing foundations
 
-- **B01 - Fix gas-property pressure units.** Correct the bar-to-Pa conversion and verify CoolProp receives the intended inlet and exit pressures. **Done when:** a focused regression check confirms the conversion and the results are recalculated.
-- **B02 - Correct and enforce hardware limits.** Resolve the AN2 exponent against the instructions; enforce each rotor's AN2 and the mean blade-speed limit with explicit units. **Done when:** passing and failing cases are checked, including the present default.
-- **B03 - Restore Kacker-Okapuu chart loading.** Point the loss module at the actual digitized charts and verify all required data load from a normal project invocation. **Done when:** the module imports and representative chart interpolation works.
+- **B01 - Fix gas-property pressure units.** Correct the bar-to-Pa conversion and verify CoolProp receives the intended inlet and exit pressures. **Status:** complete; focused regression tests verify the pressure values and a valid property result. **Done when:** a focused regression check confirms the conversion and CoolProp returns valid recalculated properties.
+- **B02 - Correct and enforce hardware limits.** The AN2 constant now matches the instructions; enforce each rotor's AN2 and the mean blade-speed limit with explicit units. **Done when:** passing and failing cases are checked, including the present default.
+- **B03 - Restore Kacker-Okapuu chart loading.** Point the loss module at the actual digitized charts and verify all required data load from a normal project invocation. **Status:** complete; focused regression tests load all four charts and check representative interpolation. **Done when:** the module imports and representative chart interpolation works.
 - **B04 - Audit the existing meanline physics.** Check thermodynamic states, relative-frame quantities, rothalpy, Euler work, continuity, angle signs and assumptions against references. **Done when:** identified issues are resolved or explicitly documented and independent checks pass.
 - **B05 - Audit existing radial-equilibrium physics.** Check governing assumptions, streamline mapping, pressure integration, mass conservation, meanline matching and vortex-law limits. **Done when:** representative cases and limitations are verified.
 - **B06 - Audit Kacker-Okapuu implementation.** Check digitized charts, coefficient definitions, corrections, applicable ranges and tip treatment against the original method and an independent reference. **Done when:** individual loss components and warnings have defensible reference checks.
@@ -106,7 +107,7 @@ The repository has a single-stage meanline prototype and velocity-triangle plott
 
 ## Key dependencies and decision points
 
-- Start with **A01-A05** and the critical repairs **B01-B03**. Physics audits **B04-B06** should inform implementation rather than being treated as optional cleanup.
+- **A01-A04** are complete; the A05 runner and run-record foundation is in place, but results cannot be treated as hardware-feasible until **B02** and the applicable downstream constraints are enforced. **B01** and **B03** are complete with focused regression checks. Physics audits **B04-B06** should inform implementation rather than being treated as optional cleanup.
 - Gas properties and cooling (**C**) feed the coupled meanline (**D04-D05**); geometry and losses (**E01-E02**, **G**) must converge consistently rather than being treated as a one-way pipeline.
 - Compare both stage counts (**D07/E04-E05**) before committing. Spanwise and geometry work may require revisiting the candidate comparison.
 - CFD and AMBRA depend on a traceable selected design and section geometry; report and packaging depend on the verified results.

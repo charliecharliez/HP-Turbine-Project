@@ -1,0 +1,38 @@
+# Project requirements and traceability
+
+The [project instructions](./Project%20Instructions%20Email.pdf) are authoritative. This checklist summarizes their engineering and delivery requirements and maps each to the roadmap work and evidence needed for acceptance.
+
+## Boundary conditions and constraints
+
+| ID | Requirement | Source | Roadmap task(s) | Verification evidence |
+|---|---|---|---|---|
+| R01 | Model air at the turbine inlet with total temperature 1850 K, total pressure 20 bar, axial inflow, and main mass flow 30 kg/s. The turbine total-to-static pressure ratio is 4.1. | p. 2 | A02, A03, D02, D03 | Input-unit checks; inlet and exit state report with declared total/static definitions; mass-flow balance. |
+| R02 | Use compressor-delivery cooling air at 21 bar and 750 K. Track its flow per row and as a percentage of the original 30 kg/s main flow. | p. 2 | A02, A03, C02, C05, C06 | Per-row coolant ledger, percentage basis, and stage mass/energy balances. |
+| R03 | Keep rotor tip clearance at 1% of blade height, vane and blade metal temperatures at or below 1250 K, mean blade speed at or below 500 m/s, and each rotor's exit AN² at or below 3.2 × 10⁷ m²·rpm². | p. 2 | A01, A02, B02, C04, D01, G01 | Explicit unit-aware constraint checks with passing and failing cases for each rotor and the current defaults. |
+| R04 | Treat the working fluid as air. Compute temperature-dependent cp and gamma, show their change through the turbine and coolant mixing, and justify the property values used. | p. 2 | C01, C02, D02, D03 | Property-source comparison and reported inlet, row, exit, and mixed-state properties over the design range. |
+| R05 | Compare one- and two-stage designs before selecting stage count. Evaluate the work split and loading trade-offs, including efficiency, additional rows/cooling, weight, and length. The instructions note that a single stage may be highly loaded (loading coefficient around 2) and that two stages reduce per-stage loading at the cost of more rows, cooling, weight, and length. | pp. 2–3 | D01, D03, D07, E04, E05 | Reproducible candidate comparison with stage count and work-split rationale. |
+
+## Required design and analysis
+
+| ID | Requirement | Source | Roadmap task(s) | Verification evidence |
+|---|---|---|---|---|
+| R06 | Define speed, work split, flow coefficient, loading coefficient, and degree of reaction for each stage; draw velocity triangles and size the annulus. Report vane-exit absolute Mach and rotor-relative inlet/exit Mach. Select the exit flow angle and Mach number and account for residual exit kinetic energy and swirl in total-to-static efficiency. | pp. 2–3 | A02, A03, D01, D02, D03, D05, D06 | Unit/frame-labelled station results; triangle closure, annulus continuity, reported Mach values, and an exit kinetic-energy/swirl performance term. |
+| R07 | Estimate losses for every vane and rotor using Kacker–Okapuu, including profile/transonic/shock, secondary, trailing-edge, tip-clearance, and coolant-mixing losses. Report total-to-total and total-to-static efficiency. | p. 3 | B03, B06, D04, D05, E01, E02 | Row-by-row loss and efficiency accounting with component/reference checks and explicit applicability warnings. |
+| R08 | Apply radial equilibrium, select and justify a vortex law, report hub/midspan/tip triangles, and check hub reaction. | p. 3 | B05, F01, F02, F03, F04 | Spanwise tables/plots, meanline matching, conservation checks, and hub-reaction result. |
+| R09 | Define vane and rotor geometry at hub, midspan, and tip: Zweifel pitch-to-chord, stagger, throat, inlet/exit metal angles, and profile parameterization. | p. 3 | G01, G02, G03, G04, G05, G06 | Traceable geometry parameters, validated sections, and exported coordinates with units. |
+| R10 | Determine how much coolant each vane and rotor needs to meet the 1250 K metal limit using the effectiveness \(\epsilon=(T_g-T_m)/(T_g-T_c)\) and a justified literature correlation. Use rotor-relative total gas temperature for rotor cooling; include mixing loss and work/efficiency penalties. | p. 2 | C03, C04, C05, C06, D04, D05, E02 | Per-row coolant and metal-temperature results, correlation applicability, conservation checks, and cooled/uncooled comparison. |
+| R11 | Show where the final design is transonic. Report spanwise Mach values and explain/quantify trailing-edge shock losses and their efficiency impact when the flow is supersonic. | pp. 2–3 | E02, E03, F02, F03 | Spanwise Mach evidence and a traceable shock-loss estimate with model limitations. |
+| R12 | Run a parametric or optimization study varying at least flow coefficient, degree of reaction, and number of stages; show effects on efficiency and coolant flow. Submit the code. | p. 4 | E04, E05, J01, J05 | Repeatable input matrix and results including failed/infeasible candidates; code and run instructions. |
+| R13 | Run at least one two-dimensional blade-to-blade CFD case at design conditions for the midspan vane and rotor; use the rotor-relative frame for the rotor. For a two-stage design, cover at least the first stage. Compare isentropic Mach distribution, exit angle, and loss with meanline predictions; show mesh, y+, convergence history, and a check using at least two grids. | p. 4 | H01, H02, H03, H04, H05 | Reproducible cases, two-grid evidence, mesh/y+ and convergence records, and quantitative meanline comparison. |
+| R14 | Propose an AMBRA test for the first rotor. Specify hub-to-tip relative total pressure, relative flow angle, and relative Mach targets; choose matching priorities among relative inlet/exit Mach, Reynolds number, hub-to-tip ratio, and aspect ratio; scale the geometry; and calculate rig inlet total pressure/temperature, mass flow, and exit static pressure. Explain Coriolis and centrifugal effects, tip-clearance flow, coolant ejection, unsteady vane wakes, and hot-engine-gas versus rig-air differences; define measurement planes, probes, and loss reduction. Check the cited facility envelope: hub-to-tip ratio 0.70–0.94, exit Reynolds number 30,000–4,000,000, adjustable subsonic-to-supersonic pressure ratio, vacuum tank to 10 kPa, heated line up to 4 kg/s at 1090 K and 55 bar, commissioning flows of 6.7–8.2 kg/s, and test durations exceeding 30 minutes. | pp. 3–4 | I01, I02, I03, I04, I05 | Target profiles and operating point with facility-feasibility checks, limitations, and a measurement/loss-calculation plan. |
+
+## Delivery and optional work
+
+| ID | Requirement | Source | Roadmap task(s) | Verification evidence |
+|---|---|---|---|---|
+| R15 | Submit one team report as a PDF (maximum 25 pages excluding appendices) and the code together in one ZIP. Give the required in-class presentation. Disclose generative-AI assistance; the team remains responsible for authorship and verifying every result. | p. 5 | J03, J04, J05 | Final package contains the report and code; page count and reproducibility are checked; presentation and AI-use disclosure are included. |
+| O01 | A three-dimensional full-stage CFD analysis is optional bonus work. | p. 4 | H06 | If pursued, document feasibility, scope, and evidence separately from required 2D CFD. |
+
+The project instructions encourage transonic vane and rotor designs, but make the two-dimensional CFD analysis itself required. Numerical results are not accepted as validated solely because a module returns a value; the relevant physical checks and model limitations must be reported.
+
+The AMBRA facility data are referenced in the instructions to A. Ruan, H. D. Nowak, L. B. Inhestern, J. Taylor, J. P. Clark, and G. Paniagua, “Bridging the gap between high-speed linear cascades and rotating turbine facilities,” *Measurement* 272 (2026), 121017. https://doi.org/10.1016/j.measurement.2026.121017
