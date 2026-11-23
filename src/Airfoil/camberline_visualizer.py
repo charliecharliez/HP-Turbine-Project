@@ -7,7 +7,7 @@ import numpy as np
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, callback, dcc, html, no_update
 
-from Airfoil.bezier_construction import Camberline
+from Airfoil.camberline import Camberline
 
 NORMALISED_AXIAL_CHORD = 1.0
 ANGLE_LIMIT = 85.0  # deg, sliders span ±ANGLE_LIMIT
