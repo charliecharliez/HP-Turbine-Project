@@ -13,6 +13,6 @@ class BC:
 	rotor_tip_clearance_ratio = 1e-2 # clearance is 1% of blade height
 	max_mean_blade_speed = 500 # m/s
 
-	max_AN2 = 3.2e-7 # rotor exit annulus area times rotational speed^2 [m^2 * rpm^2] 
+	max_AN2 = 3.2e7 # rotor exit annulus area times rotational speed^2 [m^2 * rpm^2] 
 
 boundary_conditions = BC()

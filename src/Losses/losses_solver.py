@@ -23,7 +23,7 @@ STATOR_INLET_FLOW_ANGLE = 0.0  # deg, axial inlet per the boundary conditions
 # ---------------------------------------------------------------------------
 # Digitized Kacker-Okapuu charts (NASA turbo-design digitization of KO 1982)
 # ---------------------------------------------------------------------------
-CHART_DIRECTORY = Path(__file__).with_name("data")
+CHART_DIRECTORY = Path(__file__).with_name("ko_charts")
 
 
 def load_chart(file_name: str) -> np.ndarray:
