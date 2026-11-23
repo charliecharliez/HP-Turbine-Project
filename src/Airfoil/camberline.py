@@ -5,13 +5,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from Airfoil.bezier import bezier_curve
+from Airfoil.bezier import bezier_curve, bezier_derivative, bezier_points
 
 __all__ = ["Camberline"]
 
 
 # Coordinates: x axial, y tangential, leading edge at the origin.
 # Angles: deg from axial, + toward +y.
+# Chord ratio: x/c, projection onto the chord from the leading edge over the chord length.
 @dataclass(frozen=True)
 class Camberline:
     """Quadratic Bezier camberline set by the axial chord, stagger and metal angles."""
@@ -37,6 +38,12 @@ class Camberline:
                 f"({self.inlet_metal_angle}°) and exit ({self.exit_metal_angle}°) metal angles, "
                 f"otherwise the metal-angle tangents do not meet within the axial chord"
             )
+        for name in ("inlet_metal_angle", "exit_metal_angle"):
+            if abs(getattr(self, name) - self.stagger) >= 90:
+                raise ValueError(
+                    f"{name} must lie within 90° of the stagger ({self.stagger}°), otherwise the "
+                    f"camberline doubles back along the chord"
+                )
 
     @property
     def leading_edge(self) -> np.ndarray:
@@ -70,6 +77,29 @@ class Camberline:
 
     def coordinates(self, n_points: int = 200) -> np.ndarray:
         return bezier_curve(self.control_points, n_points)
+
+    def points_at_chordratios(self, chord_ratios: np.ndarray | float) -> np.ndarray:
+        return bezier_points(self.control_points, self.bezier_parameters(chord_ratios))
+
+    def unit_tangents(self, chord_ratios: np.ndarray | float) -> np.ndarray:
+        parameters = self.bezier_parameters(chord_ratios)
+        derivatives = bezier_derivative(self.control_points, parameters)
+        return derivatives / np.linalg.norm(derivatives, axis=1, keepdims=True)
+
+    def suction_normals(self, chord_ratios: np.ndarray | float) -> np.ndarray:
+        """Unit normals pointing to the convex (suction) side of the camberline."""
+        tangents = self.unit_tangents(chord_ratios)
+        left_normals = np.column_stack((-tangents[:, 1], tangents[:, 0]))
+        turning_direction = math.copysign(1.0, self.exit_metal_angle - self.inlet_metal_angle)
+        return -turning_direction * left_normals
+
+    def bezier_parameters(self, chord_ratios: np.ndarray | float) -> np.ndarray:
+        """Bezier parameters of the camber points whose projections on the chord sit at x/c."""
+        chord_ratios = np.atleast_1d(np.asarray(chord_ratios, dtype=float))
+        chord_direction = self.trailing_edge / self.chord
+        middle_ratio = float(self.tangent_intersection @ chord_direction) / self.chord
+        discriminant = middle_ratio**2 + (1.0 - 2.0 * middle_ratio) * chord_ratios
+        return chord_ratios / (middle_ratio + np.sqrt(discriminant))
 
 
 def _tan(angle: float) -> float:  # angle in deg
