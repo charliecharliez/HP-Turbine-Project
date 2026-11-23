@@ -10,9 +10,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
 
-from Empirical.stagger_serializer import JSON_PATH, read_digitized_curves, serialize_polynomials
+from Empirical.StaggerKO.serializer import JSON_PATH, read_digitized_curves, serialize_polynomials
 
-__all__ = ["BETA_1_MIN", "beta_1_max", "beta_2_range", "plot_stagger_chart", "stagger_angle"]
+__all__ = ["beta_1_range", "beta_2_range", "get_stagger", "plot_stagger_chart"]
 
 BETA_1_MIN = -30.0  # deg
 
@@ -70,14 +70,15 @@ def _weighted_curves(beta_2: float) -> list[tuple[StaggerCurve, float]]:
     return [(curve, weight) for curve, weight in weighted_curves if weight > 0.0]
 
 
-def beta_1_max(beta_2: float) -> float:
-    """Return the largest valid inlet blade angle [deg] for the outlet blade angle beta_2 [deg]."""
-    return min(curve.beta_1_endpoint for curve, _ in _weighted_curves(beta_2))
+def beta_1_range(beta_2: float) -> tuple[float, float]:
+    """Return the (min, max) inlet blade angle [deg] covered by the chart for the outlet blade angle beta_2 [deg]."""
+    beta_1_max = min(curve.beta_1_endpoint for curve, _ in _weighted_curves(beta_2))
+    return BETA_1_MIN, beta_1_max
 
 
-def stagger_angle(beta_1: float, beta_2: float) -> float:
+def get_stagger(beta_1: float, beta_2: float) -> float:
     """Return the suggested stagger angle lambda [deg] for inlet and outlet blade angles beta_1, beta_2 [deg]."""
-    _require_within("beta_1", beta_1, BETA_1_MIN, beta_1_max(beta_2))
+    _require_within("beta_1", beta_1, *beta_1_range(beta_2))
     weighted_staggers = (weight * curve.stagger(beta_1) for curve, weight in _weighted_curves(beta_2))
     return float(sum(weighted_staggers))
 
@@ -90,7 +91,7 @@ def plot_stagger_chart(show_digitized_points: bool = True) -> Figure:
     figure, axes = plt.subplots(figsize=(7.0, 5.0), layout="constrained")
     for curve in curves:
         beta_1 = np.linspace(BETA_1_MIN, curve.beta_1_endpoint, 200)
-        stagger = [stagger_angle(value, curve.beta_2) for value in beta_1]
+        stagger = [get_stagger(value, curve.beta_2) for value in beta_1]
         axes.plot(beta_1, stagger, color=_CURVE_COLOR, linewidth=1.5)
         axes.annotate(
             f"{curve.beta_2:g}",
@@ -115,8 +116,3 @@ def plot_stagger_chart(show_digitized_points: bool = True) -> Figure:
     axes.spines[["top", "right"]].set_visible(False)
     axes.grid(True)
     return figure
-
-
-if __name__ == "__main__":
-    plot_stagger_chart()
-    plt.show()
