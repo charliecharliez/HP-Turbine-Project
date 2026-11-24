@@ -159,11 +159,10 @@ class SpanwiseFlow:
     omega: float  # rad/s
     inlet_total_temperature: float  # K
     inlet_total_pressure: float  # bar
-    gas: GasProps
 
     def degree_of_reaction(self, stator_exit_pressure: float, rotor_exit_pressure: float) -> float:
         """Meanline definition, inverting its P_s2 = P_01 (1 - (1 - R)(1 - (P_s3 / P_01)^((k-1)/k)))^(k/(k-1))."""
-        exponent = (self.gas.gamma - 1) / self.gas.gamma
+        exponent = (GAS.gamma - 1) / GAS.gamma
         stator_exit_ratio = (stator_exit_pressure / self.inlet_total_pressure) ** exponent
         rotor_exit_ratio = (rotor_exit_pressure / self.inlet_total_pressure) ** exponent
         return (stator_exit_ratio - rotor_exit_ratio) / (1 - rotor_exit_ratio)
@@ -185,25 +184,25 @@ class SpanwiseFlow:
     def total_temperature(self, radius: Radius, station: Station) -> Radius:  # K
         if station == 2:
             return self.inlet_total_temperature
-        return self.inlet_total_temperature - self.specific_work(radius) / self.gas.C_p
+        return self.inlet_total_temperature - self.specific_work(radius) / GAS.C_p
 
     def static_temperature(self, radius: Radius, station: Station) -> Radius:  # K
         axial_velocity = self.axial_velocity(radius, station)
         tangential_velocity = self.law.tangential_velocity(radius, station)
-        kinetic_temperature = (axial_velocity**2 + tangential_velocity**2) / (2 * self.gas.C_p)
+        kinetic_temperature = (axial_velocity**2 + tangential_velocity**2) / (2 * GAS.C_p)
         return self.total_temperature(radius, station) - kinetic_temperature
 
     def static_pressure(self, radius: float, station: Station) -> float:  # bar
         """Integrates dP/dr = rho V_theta^2 / r from the meanline pressure at the mean radius."""
         def log_pressure_gradient(r: float) -> float:
             tangential_velocity = self.law.tangential_velocity(r, station)
-            return tangential_velocity**2 / (self.gas.R * self.static_temperature(r, station) * r)
+            return tangential_velocity**2 / (GAS.R * self.static_temperature(r, station) * r)
 
         integral, _ = quad(log_pressure_gradient, self.annulus[station].mean_radius, radius)
         return self.mean_static_pressure[station] * math.exp(integral)
 
     def station_state(self, radius: float, station: Station) -> StationState:
-        gas = self.gas
+        gas = GAS
         axial_velocity = float(self.axial_velocity(radius, station))
         tangential_velocity = float(self.law.tangential_velocity(radius, station))
         blade_speed = self.omega * radius
@@ -249,8 +248,7 @@ class SpanwiseFlow:
 # ---------------------------------------------------------------------------
 # Meanline solution -> spanwise flow
 # ---------------------------------------------------------------------------
-def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_exponent: float = FREE_VORTEX,
-                             gas: GasProps = GAS) -> SpanwiseFlow:
+def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_exponent: float = FREE_VORTEX) -> SpanwiseFlow:
     """Spanwise flow whose swirl, mass flow and static pressure match the meanline at the mean radii."""
     annulus_2 = Annulus.from_diameters(meanline.D_hub_2, meanline.D_tip_2)
     annulus_3 = Annulus.from_diameters(meanline.D_hub_3, meanline.D_tip_3)
@@ -260,8 +258,8 @@ def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_ex
                                        annulus_3.mean_radius, mean_swirl_3)
 
     exit_static_pressure = bcs.P_01 / bcs.pressure_ratio_TS  # bar
-    density_2 = meanline.P_s2 * BAR / (gas.R * meanline.T_2)
-    density_3 = exit_static_pressure * BAR / (gas.R * meanline.T_3)
+    density_2 = meanline.P_s2 * BAR / (GAS.R * meanline.T_2)
+    density_3 = exit_static_pressure * BAR / (GAS.R * meanline.T_3)
 
     return SpanwiseFlow(
         law=law,
@@ -274,7 +272,6 @@ def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_ex
         omega=inputs.N_shaft * 2 * math.pi / 60,
         inlet_total_temperature=bcs.T_01,
         inlet_total_pressure=bcs.P_01,
-        gas=gas,
     )
 
 
