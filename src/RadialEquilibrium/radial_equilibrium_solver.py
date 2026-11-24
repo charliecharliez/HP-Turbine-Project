@@ -11,7 +11,7 @@ from scipy.integrate import quad
 from scipy.optimize import root_scalar
 
 from boundary_conditions import boundary_conditions, BC as bcs
-from Meanline.gas_props import GAS, GasProps
+from Meanline.gas_props import GAS
 from Meanline.solve_meanline import Inputs, MeanlineResult
 
 Station = Literal[2, 3]  # 2: stator exit, 3: rotor exit
