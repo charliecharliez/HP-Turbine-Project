@@ -181,6 +181,13 @@ class SpanwiseFlow:
         angular_momentum_3 = rotor_exit_radius * self.law.tangential_velocity(rotor_exit_radius, 3)
         return self.omega * (angular_momentum_2 - angular_momentum_3)
 
+    def mass_averaged_specific_work(self) -> float:  # J/kg
+        """Rotor work averaged over the rotor-exit mass flow, with density held at its meanline value as in continuity."""
+        radii = self.annulus[3].radial_grid()
+        mass_flux_weights = self.axial_velocity(radii, 3) * radii
+        weighted_work = np.trapezoid(self.specific_work(radii) * mass_flux_weights, radii)
+        return float(weighted_work / np.trapezoid(mass_flux_weights, radii))
+
     def total_temperature(self, radius: Radius, station: Station) -> Radius:  # K
         if station == 2:
             return self.inlet_total_temperature
