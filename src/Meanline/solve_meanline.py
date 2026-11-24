@@ -55,7 +55,7 @@ class MeanlineResult:
     eta_ts: float
 
 
-def _solve_states(blade_height_3: float, inputs: Inputs=Inputs()) -> MeanlineResult:
+def _solve_states(blade_height_3: float, reaction: float, loss_stator: float, loss_rotor: float, r_2: float, r_3: float, Beta_3b: float, alpha_2: float, rpm: float, ) -> MeanlineResult:
 
     # angles (in velocity triangles) are measured starting fom the axial direction
 
@@ -70,7 +70,7 @@ def _solve_states(blade_height_3: float, inputs: Inputs=Inputs()) -> MeanlineRes
     P_s3 = P_01 / boundary_conditions.pressure_ratio_TS  # static pressure at exit, bar
 
     # static pressure at stator exit, depends on degree of reaction
-    P_s2 = (1 - (1 - inputs.degree_of_reaction) * (1 - (P_s3 / P_01) ** ((k - 1) / k))) ** (k / (k - 1)) * P_01
+    P_s2 = (1 - (1 - reaction) * (1 - (P_s3 / P_01) ** ((k - 1) / k))) ** (k / (k - 1)) * P_01
 
     # Assuming an isentropic stator:
     # T_2is can be found using the isentropic relation (T_2is/T_01) = (P_s2/P_02)^((k-1)/k)
@@ -85,7 +85,7 @@ def _solve_states(blade_height_3: float, inputs: Inputs=Inputs()) -> MeanlineRes
 
     # use kinematic loss of stator to find true v_2
     # loss = 1 - v^2 / v_is^2
-    v_2 = math.sqrt(1 - inputs.loss_kinetic_stator) * v_2is
+    v_2 = math.sqrt(1 - loss_stator) * v_2is
 
     # use total temp T0 = Ts + v^2 / (2*C_p) again to solve for non-isentropic static T_2
     # total temp T_02 = T_02is since no work is done
@@ -93,22 +93,22 @@ def _solve_states(blade_height_3: float, inputs: Inputs=Inputs()) -> MeanlineRes
 
     # P = density * R * T
     density_2 = P_s2 * 1e5 / (R * T_2) # kg/m^3 (pressures are in bar)
-    alpha_2 = math.radians(inputs.alpha_2)
+    alpha_2 = math.radians(alpha_2)
     
     v_2a = v_2 * math.cos(alpha_2)
     area_2 = m_dot / density_2 / v_2a # m^2
 
     # A = pi * ((r_mean + h/2)^2 - (r_mean - h/2)^2)
-    blade_height_2 = area_2 / (2 * math.pi * inputs.radius_2)
-    D_hub_2, D_tip_2 = 2 * (inputs.radius_2 - blade_height_2/2), 2 * (inputs.radius_2 + blade_height_2/2)
+    blade_height_2 = area_2 / (2 * math.pi * r_2)
+    D_hub_2, D_tip_2 = 2 * (r_2 - blade_height_2/2), 2 * (r_2 + blade_height_2/2)
 
     # isentropic relations
     P_02 = (T_02 / T_2) ** (k / (k - 1)) * P_s2
 
     # velocity triangle
-    omega = inputs.N_shaft * (2 * math.pi) / 60  # angular speed rad/s
+    omega = rpm * (2 * math.pi) / 60  # angular speed rad/s
     # Even though the stator is not rotating, the meanline position is defined by stator geometry
-    u_2 = omega * inputs.radius_2  # m/s
+    u_2 = omega * r_2  # m/s
     
     w_2 = math.sqrt((v_2 * math.cos(alpha_2)) ** 2 + (v_2 * math.sin(alpha_2) - u_2) ** 2)
 
@@ -129,24 +129,24 @@ def _solve_states(blade_height_3: float, inputs: Inputs=Inputs()) -> MeanlineRes
 
     T_02R = T_2 + w_2**2 / (2 * C_p)  # total temperature in relative frame of reference of the rotor
 
-    u_3 = omega * inputs.radius_3  # m/s
+    u_3 = omega * r_3  # m/s
     T_03R = T_02R + (u_3**2 - u_2**2) / (2 * C_p)
 
     # T_03Ris = T_03is + w_3is^2 / (2 * C_p)
     # where T_03R = T_03Ris
     w_3is = math.sqrt(2 * C_p * (T_03R - T_3is))
     # use kinematic loss to find w_3
-    w_3 = math.sqrt(1 - inputs.loss_kinetic_rotor) * w_3is
+    w_3 = math.sqrt(1 - loss_rotor) * w_3is
     T_3 = T_03R - w_3**2 / (2 * C_p)  # definition of total temperature
 
-    Beta3 = math.radians(inputs.Beta3_metal)  # geometric parameter, reasonably accurate
+    Beta3 = math.radians(Beta_3b)  # geometric parameter, reasonably accurate
 
     v_3 = math.sqrt((w_3 * math.cos(Beta3)) ** 2 + (w_3 * math.sin(Beta3) - u_3) ** 2)
 
     alpha_3 = math.acos(w_3 * math.cos(Beta3) / v_3)
     v_3a = v_3 * math.cos(alpha_3)
     density_3 = P_s3 * 1e5 / (R * T_3) # kg / m^3 (pressures are in bar)
-    area_3 = math.pi * ((inputs.radius_3 + blade_height_3/2)**2 - (inputs.radius_3 - blade_height_3/2)**2)
+    area_3 = math.pi * ((r_3 + blade_height_3/2)**2 - (r_3 - blade_height_3/2)**2)
     residual = m_dot - density_3 * v_3a * area_3
 
     # Signed tangential velocities (+ along rotation) for the Euler cross-check.
@@ -166,8 +166,8 @@ def _solve_states(blade_height_3: float, inputs: Inputs=Inputs()) -> MeanlineRes
         M_2=M_2, M_2rel=M_2rel,
         blade_height_2=blade_height_2, blade_height_3=blade_height_3,
         D_hub_2=D_hub_2, D_tip_2=D_tip_2,
-        D_hub_3=2 * (inputs.radius_3 - blade_height_3 / 2),
-        D_tip_3=2 * (inputs.radius_3 + blade_height_3 / 2),
+        D_hub_3=2 * (r_3 - blade_height_3 / 2),
+        D_tip_3=2 * (r_3 + blade_height_3 / 2),
         area_3=area_3,
         work_euler=work_euler, work_thermo=work_thermo,
         eta_ts=work_thermo / (C_p * T_01 * (1 - (P_s3 / P_01) ** ((k - 1) / k))),
