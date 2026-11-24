@@ -55,14 +55,13 @@ class MeanlineResult:
     eta_ts: float
 
 
-def _solve_states(blade_height_3: float, gas: GasProps = GAS, inputs: Inputs=Inputs()) -> MeanlineResult:
-
+def _solve_states(blade_height_3: float, inputs: Inputs=Inputs()) -> MeanlineResult:
 
     # angles (in velocity triangles) are measured starting fom the axial direction
 
-    C_p = gas.C_p  # J/(kg*K) specific heat with constant pressure
-    k = gas.gamma  # ratio of specific heats
-    R = gas.R  # gas constant
+    C_p = GAS.C_p  # J/(kg*K) specific heat with constant pressure
+    k = GAS.gamma  # ratio of specific heats
+    R = GAS.R  # gas constant
 
     m_dot = boundary_conditions.m_dot # mass flowrate in kg/s
 
@@ -181,7 +180,7 @@ def solve_meanline(inputs: Inputs = Inputs()) -> MeanlineResult:
     Radii and degree of reaction are inputs; the unknown is blade_height_3.
     """
     def residual(h):
-        return _solve_states(h, GAS, inputs).residual
+        return _solve_states(h, inputs).residual
 
     # residual(0) = +m_dot; it goes negative once the annulus can pass more than m_dot.
     h_max = 2 * inputs.radius_3  # hub radius -> 0
@@ -189,7 +188,7 @@ def solve_meanline(inputs: Inputs = Inputs()) -> MeanlineResult:
         raise ValueError("Cannot pass m_dot through the rotor exit even with hub radius 0; "
                          "check radius_3 / angles / reaction.")
     h_3 = brentq(residual, 1e-6, h_max, xtol=1e-12)
-    return _solve_states(h_3, GAS, inputs)
+    return _solve_states(h_3, inputs)
 
 def plot_velocity_triangles(result: MeanlineResult) -> None:
     """Show the velocity triangles at station 2 (stator exit / rotor inlet) and
