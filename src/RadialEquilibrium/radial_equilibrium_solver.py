@@ -10,7 +10,7 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import root_scalar
 
-from boundary_conditions import BC, boundary_conditions
+from boundary_conditions import boundary_conditions, BC as bcs
 from Meanline.gas_props import GAS, GasProps
 from Meanline.solve_meanline import Inputs, MeanlineResult
 
@@ -250,7 +250,7 @@ class SpanwiseFlow:
 # Meanline solution -> spanwise flow
 # ---------------------------------------------------------------------------
 def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_exponent: float = FREE_VORTEX,
-                             gas: GasProps = GAS, bcs: BC = boundary_conditions) -> SpanwiseFlow:
+                             gas: GasProps = GAS) -> SpanwiseFlow:
     """Spanwise flow whose swirl, mass flow and static pressure match the meanline at the mean radii."""
     annulus_2 = Annulus.from_diameters(meanline.D_hub_2, meanline.D_tip_2)
     annulus_3 = Annulus.from_diameters(meanline.D_hub_3, meanline.D_tip_3)
