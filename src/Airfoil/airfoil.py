@@ -5,7 +5,9 @@ from dataclasses import dataclass, field
 from functools import cached_property
 
 import numpy as np
-from scipy.optimize import root
+from matplotlib.path import Path
+from scipy.optimize import minimize, root
+from scipy.spatial import cKDTree
 
 from Airfoil.bezier import bezier_derivative, bezier_points
 from Airfoil.camberline import Camberline
@@ -14,6 +16,8 @@ __all__ = ["Airfoil", "AirfoilSide", "OffsetPoint", "TrailingEdgeCircle"]
 
 _SUCTION_SIDE = 1.0  # sign along the camber suction normals
 _PRESSURE_SIDE = -1.0
+_OUTLINE_POINTS_PER_SIDE = 2000  # resolution of the outline for the inscribed-circle search
+_SEARCH_GRID_SIZE = 60  # grid points per axis seeding the inscribed-circle search
 
 
 # Lengths in the units of the camberline's axial chord; angles in deg, + away from the camberline.
@@ -90,6 +94,46 @@ class Airfoil:
         te_extension, te_circle = self._solve_trailing_edge()
         object.__setattr__(self, "te_extension", te_extension)
         object.__setattr__(self, "te_circle", te_circle)
+
+    @cached_property
+    def chord_length(self) -> float:
+        """Camberline chord, the reference length of every chord ratio."""
+        return self.camberline.chord
+
+    @cached_property
+    def max_thickness(self) -> float:
+        """Diameter of the largest circle inscribed in the profile."""
+        _, radius = self._max_inscribed_circle
+        return 2 * radius
+
+    @cached_property
+    def chord_ratio_at_max_thick(self) -> float:
+        """Chord ratio x/c of the centre of the largest inscribed circle."""
+        center, _ = self._max_inscribed_circle
+        chord_direction = self.camberline.trailing_edge / self.chord_length
+        return float(center @ chord_direction) / self.chord_length
+
+    @cached_property
+    def _max_inscribed_circle(self) -> tuple[np.ndarray, float]:
+        outline = self.coordinates(_OUTLINE_POINTS_PER_SIDE)
+        boundary = Path(outline)
+        nearest_boundary = cKDTree(outline)
+
+        def inscribed_radius(center: np.ndarray) -> float:
+            distance, _ = nearest_boundary.query(center)
+            return float(distance) if boundary.contains_point(center) else -float(distance)
+
+        lower_corner = outline.min(axis=0)
+        upper_corner = outline.max(axis=0)
+        axes = [np.linspace(low, high, _SEARCH_GRID_SIZE) for low, high in zip(lower_corner, upper_corner)]
+        candidates = np.column_stack([grid.ravel() for grid in np.meshgrid(*axes)])
+        candidates = candidates[boundary.contains_points(candidates)]
+        distances, _ = nearest_boundary.query(candidates)
+        best_candidate = candidates[np.argmax(distances)]
+
+        refined = minimize(lambda center: -inscribed_radius(center), best_candidate, method="Nelder-Mead",
+                           options={"xatol": 1e-9, "fatol": 1e-12})
+        return refined.x, inscribed_radius(refined.x)
 
     # ============================================================ control points
     @cached_property
