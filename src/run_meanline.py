@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from boundary_conditions import boundary_conditions
 from design_models import BAR_TO_PA, JsonObject, RunRecord, RunStatus
+from hardware_limits import check_rotor_hardware_limits
 from Meanline.solve_meanline import Inputs, MeanlineResult, solve_meanline
 from run_records import write_run_record
 
@@ -124,8 +125,11 @@ def _input_snapshot(inputs: Inputs) -> JsonObject:
     }
 
 
-def _result_snapshot(result: MeanlineResult) -> JsonObject:
+def _result_snapshot(
+    result: MeanlineResult, hardware_limits: JsonObject | None
+) -> JsonObject:
     return {
+        "hardware_limits": hardware_limits,
         "mass_flow_residual_kg_s": result.residual,
         "mass_flow_residual_tolerance_kg_s": MASS_FLOW_RESIDUAL_TOLERANCE_KG_S,
         "mass_flow_kg_s": result.m_dot,
@@ -161,11 +165,12 @@ def _record(
     status: RunStatus,
     converged: bool | None,
     result: MeanlineResult | None,
+    hardware_limits: JsonObject | None = None,
     error: str | None = None,
 ) -> RunRecord:
     warnings = (
-        "This is the single-stage meanline prototype; integrated cooling and all hardware-limit "
-        "checks are not yet part of this run.",
+        "This is the single-stage meanline prototype; integrated cooling and other design "
+        "constraints are not yet checked.",
     )
     return RunRecord(
         run_id=str(uuid4()),
@@ -174,12 +179,13 @@ def _record(
         assumptions=(
             "The meanline solver uses its current constant-property gas model and configured "
             "kinetic-loss inputs.",
-            "The model execution status does not certify design feasibility.",
+            "The model execution status and hardware-limit checks do not certify overall "
+            "design feasibility.",
         ),
         warnings=warnings,
         status=status,
         converged=converged,
-        result=_result_snapshot(result) if result is not None else None,
+        result=_result_snapshot(result, hardware_limits) if result is not None else None,
         error=error,
     )
 
@@ -191,14 +197,24 @@ def run_meanline(
     inputs = load_meanline_inputs(config_path)
     try:
         result = solve_meanline(inputs)
+        converged = abs(result.residual) <= MASS_FLOW_RESIDUAL_TOLERANCE_KG_S
+        hardware_limits = None
+        if converged:
+            hardware_limits = check_rotor_hardware_limits(
+                stage_index=1,
+                shaft_speed_rpm=inputs.N_shaft,
+                inlet_blade_speed_m_s=result.u_2,
+                exit_blade_speed_m_s=result.u_3,
+                exit_annulus_area_m2=result.area_3,
+                boundary=boundary_conditions.as_si(),
+            )
     except ValueError as error:
-        record = _record(inputs, RunStatus.FAILED, None, None, str(error))
+        record = _record(inputs, RunStatus.FAILED, None, None, error=str(error))
         write_run_record(output_path, record)
         raise
 
-    converged = abs(result.residual) <= MASS_FLOW_RESIDUAL_TOLERANCE_KG_S
     status = RunStatus.SUCCEEDED if converged else RunStatus.NON_CONVERGED
-    record = _record(inputs, status, converged, result)
+    record = _record(inputs, status, converged, result, hardware_limits)
     write_run_record(output_path, record)
     return record
 
@@ -210,8 +226,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     record = run_meanline(arguments.config, arguments.output)
+    if record.status is not RunStatus.SUCCEEDED:
+        print(f"{record.status.value}: run record written to {arguments.output}")
+        return 2
+    if record.result is None:
+        raise ValueError("successful run is missing its result")
+    hardware_limits = record.result["hardware_limits"]
+    if not isinstance(hardware_limits, dict) or not isinstance(hardware_limits.get("passed"), bool):
+        raise ValueError("successful run is missing its hardware-limit checks")
+    if not hardware_limits["passed"]:
+        print(f"hardware_infeasible: run record written to {arguments.output}")
+        return 2
     print(f"{record.status.value}: run record written to {arguments.output}")
-    return 0 if record.status is RunStatus.SUCCEEDED else 2
+    return 0
 
 
 if __name__ == "__main__":

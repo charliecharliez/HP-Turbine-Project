@@ -27,9 +27,11 @@ Run a configuration and write a record:
 python src/run_meanline.py --config config/meanline.json --output runs/candidate.json
 ```
 
-The JSON record stores a schema version, run ID, the full boundary-condition and meanline input snapshot, assumptions, warnings, convergence status, and unit-labelled results. `succeeded` means the meanline mass-flow residual is within `1e-6 kg/s`; the result also records this tolerance. `non_converged` contains the solver output but returns a nonzero process status. If the solver rejects a case with `ValueError`, the runner writes a `failed` record and re-raises the error. Invalid JSON, unknown fields, and malformed values are rejected before solving.
+The JSON record stores a schema version, run ID, the full boundary-condition and meanline input snapshot, assumptions, warnings, convergence status, and unit-labelled results. `succeeded` means the meanline mass-flow residual is within `1e-6 kg/s`; the result also records this tolerance. `non_converged` contains the solver output, leaves `result.hardware_limits` null, and returns a nonzero process status. If the solver or hardware checks reject invalid values with `ValueError`, the runner writes a `failed` record and re-raises the error. Invalid JSON, unknown fields, and malformed values are rejected before solving.
 
-This runner only records execution of the current single-stage meanline prototype. It explicitly warns that integrated cooling and hardware-limit checks are not part of that run; a successful solver status is not a claim that the design is feasible or validated. The plotting entry point remains separate:
+For converged runs, `result.hardware_limits` reports the stage, measured value, limit, unit, and pass/fail for rotor inlet and exit mean blade speeds and rotor-exit AN². The AN² calculation uses exit annulus area in m² and shaft speed in rpm; values equal to the limits pass. If any check fails, the runner retains the result and `succeeded` solver status, prints `hardware_infeasible`, and returns a nonzero process status. The default configuration exceeds the mean blade-speed limit and is therefore hardware-infeasible.
+
+These runner checks apply to the current single-stage prototype. Direct calls to `solve_meanline` do not enforce them. Passing the checks does not certify other constraints, cooling, or overall design feasibility. The plotting entry point remains separate:
 
 ```powershell
 python src/main.py
