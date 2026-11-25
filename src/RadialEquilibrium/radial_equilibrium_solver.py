@@ -10,9 +10,8 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import root_scalar
 
-from boundary_conditions import boundary_conditions, BC as bcs
 from Meanline.gas_props import GAS
-from Meanline.solve_meanline import Inputs, MeanlineResult
+from Meanline.solve_meanline import MeanlineResult
 
 Station = Literal[2, 3]  # 2: stator exit, 3: rotor exit
 Radius = float | np.ndarray  # m
@@ -209,13 +208,12 @@ class SpanwiseFlow:
         return self.mean_static_pressure[station] * math.exp(integral)
 
     def station_state(self, radius: float, station: Station) -> StationState:
-        gas = GAS
         axial_velocity = float(self.axial_velocity(radius, station))
         tangential_velocity = float(self.law.tangential_velocity(radius, station))
         blade_speed = self.omega * radius
         static_temperature = float(self.static_temperature(radius, station))
         static_pressure = self.static_pressure(radius, station)
-        speed_of_sound = math.sqrt(gas.gamma * gas.R * static_temperature)
+        speed_of_sound = math.sqrt(GAS.gamma * GAS.R * static_temperature)
         return StationState(
             radius=radius,
             axial_velocity=axial_velocity,
@@ -223,7 +221,7 @@ class SpanwiseFlow:
             blade_speed=blade_speed,
             static_temperature=static_temperature,
             static_pressure=static_pressure,
-            density=static_pressure * BAR / (gas.R * static_temperature),
+            density=static_pressure * BAR / (GAS.R * static_temperature),
             mach=math.hypot(axial_velocity, tangential_velocity) / speed_of_sound,
             relative_mach=math.hypot(axial_velocity, tangential_velocity - blade_speed) / speed_of_sound,
         )
@@ -255,18 +253,17 @@ class SpanwiseFlow:
 # ---------------------------------------------------------------------------
 # Meanline solution -> spanwise flow
 # ---------------------------------------------------------------------------
-def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_exponent: float = FREE_VORTEX) -> SpanwiseFlow:
+def solve_radial_equilibrium(meanline: MeanlineResult, vortex_exponent: float = FREE_VORTEX) -> SpanwiseFlow:
     """Spanwise flow whose swirl, mass flow and static pressure match the meanline at the mean radii."""
     annulus_2 = Annulus.from_diameters(meanline.D_hub_2, meanline.D_tip_2)
     annulus_3 = Annulus.from_diameters(meanline.D_hub_3, meanline.D_tip_3)
-    mean_swirl_2 = meanline.v_2 * math.sin(math.radians(inputs.alpha_2))
+    mean_swirl_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
     mean_swirl_3 = meanline.v_3 * math.sin(math.radians(meanline.alpha_3))
     law = VortexLaw.through_mean_swirl(vortex_exponent, annulus_2.mean_radius, mean_swirl_2,
                                        annulus_3.mean_radius, mean_swirl_3)
 
-    exit_static_pressure = meanline.P_s3  # bar
     density_2 = meanline.P_s2 * BAR / (GAS.R * meanline.T_2)
-    density_3 = exit_static_pressure * BAR / (GAS.R * meanline.T_3)
+    density_3 = meanline.P_s3 * BAR / (GAS.R * meanline.T_3)
 
     return SpanwiseFlow(
         law=law,
@@ -275,8 +272,8 @@ def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_ex
             2: axial_velocity_constant(law, 2, annulus_2, meanline.m_dot, density_2),
             3: axial_velocity_constant(law, 3, annulus_3, meanline.m_dot, density_3),
         },
-        mean_static_pressure={2: meanline.P_s2, 3: exit_static_pressure},
-        omega=inputs.N_shaft * 2 * math.pi / 60,
+        mean_static_pressure={2: meanline.P_s2, 3: meanline.P_s3},
+        omega=meanline.omega,
         inlet_total_temperature=meanline.T_01,
         inlet_total_pressure=meanline.P_01,
     )

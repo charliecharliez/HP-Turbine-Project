@@ -7,20 +7,20 @@ from functools import cached_property
 
 import numpy as np
 from matplotlib.path import Path
-from scipy.optimize import minimize, minimize_scalar, root
-from scipy.spatial import cKDTree
+from scipy.optimize import brentq, minimize, minimize_scalar, root
+from scipy.spatial import KDTree
 
 from Airfoil.bezier import bezier_derivative, bezier_points
 from Airfoil.camberline import Camberline
-from Empirical.StaggerKO import get_stagger
+from Empirical.StaggerKO import beta_1_range, beta_2_range, get_stagger
 from Losses.losses_solver import (STATOR_INLET_FLOW_ANGLE, AirfoilParams, RowKind, to_kacker_okapuu_angles,
                                   zweifel_pitch_chord)
-from Meanline.gas_props import GAS, GasProps
+from Meanline.gas_props import GAS
 from RadialEquilibrium.radial_equilibrium_solver import SpanwiseFlow
 
 __all__ = ["Airfoil", "AirfoilSide", "BladeRow", "BladeRowDesign", "BladeSection", "OffsetPoint",
-           "ProfileShape", "SectionFlow", "TrailingEdgeCircle", "blade_row", "print_blade_row", "rotor_row",
-           "stator_row"]
+           "ProfileShape", "SectionFlow", "TrailingEdgeCircle", "blade_row", "estimated_airfoil_params",
+           "print_blade_row", "rotor_row", "stagger_chart_covers", "stator_row"]
 
 _SUCTION_SIDE = 1.0  # sign along the camber suction normals
 _PRESSURE_SIDE = -1.0
@@ -125,11 +125,11 @@ class Airfoil:
     def _max_inscribed_circle(self) -> tuple[np.ndarray, float]:
         outline = self.coordinates(_OUTLINE_POINTS_PER_SIDE)
         boundary = Path(outline)
-        nearest_boundary = cKDTree(outline)
+        nearest_boundary = KDTree(outline)
 
         def inscribed_radius(center: np.ndarray) -> float:
             distance, _ = nearest_boundary.query(center)
-            return float(distance) if boundary.contains_point(center) else -float(distance)
+            return float(distance) if boundary.contains_point((center[0], center[1])) else -float(distance)
 
         lower_corner = outline.min(axis=0)
         upper_corner = outline.max(axis=0)
@@ -331,6 +331,9 @@ def _polar_angle(vector: np.ndarray) -> float:  # rad
 # ============================================================================================
 SPAN_FRACTIONS = {"hub": 0.0, "midspan": 0.5, "tip": 1.0}
 THROAT_SAMPLES = 400
+MAX_DEVIATION = 10.0  # deg, search range of the exit metal angle about the exit flow angle
+BRACKET_STEP = 1.0  # deg
+METAL_ANGLE_TOLERANCE = 1e-6  # deg
 
 
 # ============================================================== design choices
@@ -371,7 +374,7 @@ class SectionFlow:
 
 @dataclass(frozen=True)
 class BladeSection:
-    """One spanwise blade section; lengths in m, airfoil coordinates in axial chords, metal angles at zero incidence and deviation."""
+    """One spanwise blade section; lengths in m, airfoil coordinates in axial chords, zero incidence, exit metal angle set by the throat."""
 
     flow: SectionFlow
     airfoil: Airfoil
@@ -409,8 +412,8 @@ class BladeSection:
         return zweifel_coefficient(self.flow.inlet_angle, self.flow.exit_angle, self.pitch / self.axial_chord)
 
     @property
-    def deviation(self) -> float:  # deg, throat exit angle minus the metal exit angle magnitude
-        return self.throat_exit_angle - abs(self.airfoil.camberline.exit_metal_angle)
+    def deviation(self) -> float:  # deg, exit metal angle magnitude minus the exit flow angle magnitude
+        return abs(self.airfoil.camberline.exit_metal_angle) - abs(self.flow.exit_angle)
 
 
 @dataclass(frozen=True)
@@ -501,11 +504,71 @@ def rotor_section_flows(flow: SpanwiseFlow) -> list[SectionFlow]:
     return sections
 
 
-def blade_section(flow: SectionFlow, axial_chord: float, pitch: float, shape: ProfileShape,
-                  gas: GasProps) -> BladeSection:
-    stagger = kacker_okapuu_stagger(flow.inlet_angle, flow.exit_angle)
-    camberline = Camberline(1.0, stagger, flow.inlet_angle, flow.exit_angle)
-    airfoil = Airfoil(camberline, shape.le_radius, shape.te_diam, shape.suction, shape.pressure)
+def stagger_chart_covers(inlet_angle: float, exit_angle: float) -> bool:
+    """Whether KO Fig. 5 covers these signed metal angles [deg]."""
+    ko_inlet, ko_exit = to_kacker_okapuu_angles(inlet_angle, exit_angle)
+    lowest_exit, highest_exit = beta_2_range()
+    if not lowest_exit <= ko_exit <= highest_exit:
+        return False
+    lowest_inlet, highest_inlet = beta_1_range(ko_exit)
+    return lowest_inlet <= ko_inlet <= highest_inlet
+
+
+def estimated_airfoil_params(design: BladeRowDesign, inlet_angle: float, exit_angle: float) -> AirfoilParams:
+    """Midspan parameters without building the profile: KO stagger at the flow angles, Losses' default thickness ratios."""
+    stagger = kacker_okapuu_stagger(inlet_angle, exit_angle)
+    return AirfoilParams(aspect_ratio=design.aspect_ratio, axial_chord_ratio=math.cos(math.radians(stagger)),
+                         zweifel=design.zweifel)
+
+
+def section_airfoil(flow: SectionFlow, exit_metal_angle: float, shape: ProfileShape) -> Airfoil:
+    """Profile in axial chords at zero incidence, with the KO stagger of its metal angles."""
+    stagger = kacker_okapuu_stagger(flow.inlet_angle, exit_metal_angle)
+    camberline = Camberline(1.0, stagger, flow.inlet_angle, exit_metal_angle)
+    return Airfoil(camberline, shape.le_radius, shape.te_diam, shape.suction, shape.pressure)
+
+
+def solve_exit_metal_angle(flow: SectionFlow, pitch_axial_chord: float, shape: ProfileShape) -> float:
+    """Signed exit metal angle [deg] whose measured throat turns the flow to its exit flow angle."""
+    exit_direction = math.copysign(1.0, flow.exit_angle)
+    lowest_chart_angle, highest_chart_angle = beta_2_range()
+    lowest_magnitude = max(lowest_chart_angle, abs(flow.exit_angle) - MAX_DEVIATION)
+    highest_magnitude = min(highest_chart_angle, abs(flow.exit_angle) + MAX_DEVIATION)
+
+    def exit_angle_error(metal_angle_magnitude: float) -> float:
+        airfoil = section_airfoil(flow, exit_direction * metal_angle_magnitude, shape)
+        throat_pitch = measure_throat(airfoil, pitch_axial_chord) / pitch_axial_chord
+        return throat_exit_angle(throat_pitch, flow.exit_mach, GAS.gamma) - abs(flow.exit_angle)
+
+    try:
+        bracket = sign_change_bracket(exit_angle_error, abs(flow.exit_angle), lowest_magnitude, highest_magnitude)
+        magnitude = brentq(exit_angle_error, *bracket, xtol=METAL_ANGLE_TOLERANCE)
+    except ValueError as error:
+        raise ValueError(f"No exit metal angle within {lowest_magnitude:.1f}-{highest_magnitude:.1f} deg sets "
+                         f"the throat for the {flow.exit_angle:.2f} deg exit flow at span fraction "
+                         f"{flow.span_fraction:g}") from error
+    return exit_direction * magnitude
+
+
+def sign_change_bracket(increasing_error: Callable[[float], float], start: float, lowest: float,
+                        highest: float) -> tuple[float, float]:
+    """Step from start toward the root of an increasing error until its sign changes, within [lowest, highest]."""
+    previous = min(max(start, lowest), highest)
+    previous_error = increasing_error(previous)
+    step = BRACKET_STEP if previous_error < 0 else -BRACKET_STEP
+    while True:
+        current = min(max(previous + step, lowest), highest)
+        if current == previous:
+            raise ValueError(f"The error keeps its sign from {start:g} to the end of [{lowest:g}, {highest:g}]")
+        current_error = increasing_error(current)
+        if current_error * previous_error <= 0:
+            return min(previous, current), max(previous, current)
+        previous, previous_error = current, current_error
+
+
+def blade_section(flow: SectionFlow, axial_chord: float, pitch: float, shape: ProfileShape) -> BladeSection:
+    exit_metal_angle = solve_exit_metal_angle(flow, pitch / axial_chord, shape)
+    airfoil = section_airfoil(flow, exit_metal_angle, shape)
     throat = measure_throat(airfoil, pitch / axial_chord) * axial_chord
     return BladeSection(
         flow=flow,
@@ -513,41 +576,42 @@ def blade_section(flow: SectionFlow, axial_chord: float, pitch: float, shape: Pr
         axial_chord=axial_chord,
         pitch=pitch,
         throat=throat,
-        throat_exit_angle=throat_exit_angle(throat / pitch, flow.exit_mach, gas.gamma),
+        throat_exit_angle=throat_exit_angle(throat / pitch, flow.exit_mach, GAS.gamma),
     )
 
 
-def blade_row(kind: RowKind, section_flows: list[SectionFlow], height: float, design: BladeRowDesign,
-              gas: GasProps = GAS) -> BladeRow:
-    """Axial chord from the midspan aspect ratio, blade count from the midspan Zweifel pitch, held across the span."""
+def blade_row(kind: RowKind, section_flows: list[SectionFlow], height: float, design: BladeRowDesign) -> BladeRow:
+    """Axial chord from the midspan aspect ratio at its throat-matched stagger; blade count from the midspan Zweifel pitch."""
     midspan = section_flows[1]
-    midspan_stagger = kacker_okapuu_stagger(midspan.inlet_angle, midspan.exit_angle)
+    zweifel_pitch_axial_chord = zweifel_pitch_chord(midspan.inlet_angle, midspan.exit_angle, 1.0, design.zweifel)
+    midspan_metal_angle = solve_exit_metal_angle(midspan, zweifel_pitch_axial_chord, design.shape)
+    midspan_stagger = kacker_okapuu_stagger(midspan.inlet_angle, midspan_metal_angle)
     chord = height / design.aspect_ratio
     axial_chord = chord * math.cos(math.radians(midspan_stagger))
 
-    zweifel_pitch_axial_chord = zweifel_pitch_chord(midspan.inlet_angle, midspan.exit_angle, 1.0, design.zweifel)
     zweifel_pitch = zweifel_pitch_axial_chord * axial_chord
     blade_count = max(1, round(2 * math.pi * midspan.radius / zweifel_pitch))
 
     hub, mid, tip = (blade_section(section, axial_chord, 2 * math.pi * section.radius / blade_count,
-                                   design.shape, gas) for section in section_flows)
+                                   design.shape) for section in section_flows)
     return BladeRow(kind, blade_count, height, hub, mid, tip)
 
 
-def stator_row(flow: SpanwiseFlow, design: BladeRowDesign = STATOR_DESIGN, gas: GasProps = GAS) -> BladeRow:
+def stator_row(flow: SpanwiseFlow, design: BladeRowDesign = STATOR_DESIGN) -> BladeRow:
     height = flow.annulus[2].tip_radius - flow.annulus[2].hub_radius
-    return blade_row("stator", stator_section_flows(flow), height, design, gas)
+    return blade_row("stator", stator_section_flows(flow), height, design)
 
 
-def rotor_row(flow: SpanwiseFlow, design: BladeRowDesign = ROTOR_DESIGN, gas: GasProps = GAS) -> BladeRow:
+def rotor_row(flow: SpanwiseFlow, design: BladeRowDesign = ROTOR_DESIGN) -> BladeRow:
     height = flow.annulus[3].tip_radius - flow.annulus[3].hub_radius
-    return blade_row("rotor", rotor_section_flows(flow), height, design, gas)
+    return blade_row("rotor", rotor_section_flows(flow), height, design)
 
 
 # =================================================================== reporting
 BLADE_TABLE_ROWS: tuple[tuple[str, Callable[[BladeSection], float], str], ...] = (
     ("Radius [mm]", lambda section: section.flow.radius * 1e3, ".2f"),
     ("Inlet metal [deg]", lambda section: section.airfoil.camberline.inlet_metal_angle, ".2f"),
+    ("Exit flow [deg]", lambda section: section.flow.exit_angle, ".2f"),
     ("Exit metal [deg]", lambda section: section.airfoil.camberline.exit_metal_angle, ".2f"),
     ("Stagger [deg]", lambda section: section.stagger, ".2f"),
     ("Chord [mm]", lambda section: section.chord * 1e3, ".3f"),
