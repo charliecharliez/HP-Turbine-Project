@@ -24,15 +24,26 @@ class Inputs:
 
     loss_kinetic_stator: float = 0.027 # assumed for now
     loss_kinetic_rotor: float = 0.054 # assumed for now
+    pressure_ratio: float = boundary_conditions.pressure_ratio_TS
+
+@dataclass
+class StageInlet:
+    T_0: float = boundary_conditions.T_01  # K, total temperature
+    P_0: float = boundary_conditions.P_01  # bar, total pressure
+    m_dot: float = boundary_conditions.m_dot  # kg/s
 
 @dataclass
 class MeanlineResult:
     residual: float  # kg/s, m_dot - m_dot_3
     m_dot: float
+    T_01: float  # K
+    P_01: float  # bar
     P_s2: float  # bar
+    P_s3: float  # bar
     T_2: float
     T_3: float
     T_03: float
+    P_03: float  # bar
     v_2: float
     w_2: float
     w_3: float
@@ -53,21 +64,33 @@ class MeanlineResult:
     work_euler: float  # J/kg, u2*vtheta2 - u3*vtheta3
     work_thermo: float  # J/kg, cp*(T_01 - T_03); must equal work_euler
     eta_ts: float
+    eta_tt: float
+    stage_loading: float  # work_euler / u_mean^2
 
 
-def _solve_states(blade_height_3: float, reaction: float, loss_stator: float, loss_rotor: float, r_2: float, r_3: float, Beta_3b: float, alpha_2: float, rpm: float, ) -> MeanlineResult:
+def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> MeanlineResult:
 
     # angles (in velocity triangles) are measured starting fom the axial direction
+
+    p_ratio = inputs.pressure_ratio
+    reaction = inputs.degree_of_reaction
+    loss_stator = inputs.loss_kinetic_stator
+    loss_rotor = inputs.loss_kinetic_rotor
+    r_2 = inputs.radius_2
+    r_3 = inputs.radius_3
+    Beta_3b = inputs.Beta3_metal
+    alpha_2 = inputs.alpha_2
+    rpm = inputs.N_shaft
 
     C_p = GAS.C_p  # J/(kg*K) specific heat with constant pressure
     k = GAS.gamma  # ratio of specific heats
     R = GAS.R  # gas constant
 
-    m_dot = boundary_conditions.m_dot # mass flowrate in kg/s
+    m_dot = inlet.m_dot  # mass flowrate in kg/s
 
-    T_01 = boundary_conditions.T_01 # total temperature at inlet, Kelvin
-    P_01 = boundary_conditions.P_01  # total pressure at inlet, bar
-    P_s3 = P_01 / boundary_conditions.pressure_ratio_TS  # static pressure at exit, bar
+    T_01 = inlet.T_0  # total temperature at inlet, Kelvin
+    P_01 = inlet.P_0  # total pressure at inlet, bar
+    P_s3 = P_01 / p_ratio  # static pressure at exit, bar
 
     # static pressure at stator exit, depends on degree of reaction
     P_s2 = (1 - (1 - reaction) * (1 - (P_s3 / P_01) ** ((k - 1) / k))) ** (k / (k - 1)) * P_01
@@ -154,13 +177,20 @@ def _solve_states(blade_height_3: float, reaction: float, loss_stator: float, lo
     v_theta_2 = v_2 * math.sin(alpha_2)
     v_theta_3 = u_3 - w_3 * math.sin(Beta3)
     T_03 = T_3 + v_3**2 / (2 * C_p)
+    P_03 = P_s3 * (T_03 / T_3) ** (k / (k - 1))
     work_euler = u_2 * v_theta_2 - u_3 * v_theta_3  # J/kg
     work_thermo = C_p * (T_01 - T_03)  # J/kg
+
+    stage_loading = work_euler / (omega * (r_2 + r_3) / 2) ** 2
+    exponent = (k - 1) / k
+    eta_ts = work_thermo / (C_p * T_01 * (1 - (P_s3 / P_01) ** exponent))
+    eta_tt = work_thermo / (C_p * T_01 * (1 - (P_03 / P_01) ** exponent))
 
     return MeanlineResult(
         residual=residual,
         m_dot=m_dot,
-        P_s2=P_s2, T_2=T_2, T_3=T_3, T_03=T_03,
+        T_01=T_01, P_01=P_01,
+        P_s2=P_s2, P_s3=P_s3, T_2=T_2, T_3=T_3, T_03=T_03,
         v_2=v_2, w_2=w_2, w_3=w_3, v_3=v_3, u_2=u_2, u_3=u_3,
         Beta2=Beta2, alpha_3=math.degrees(math.atan2(v_theta_3, v_3a)),
         M_2=M_2, M_2rel=M_2rel,
@@ -170,17 +200,20 @@ def _solve_states(blade_height_3: float, reaction: float, loss_stator: float, lo
         D_tip_3=2 * (r_3 + blade_height_3 / 2),
         area_3=area_3,
         work_euler=work_euler, work_thermo=work_thermo,
-        eta_ts=work_thermo / (C_p * T_01 * (1 - (P_s3 / P_01) ** ((k - 1) / k))),
+        eta_ts=eta_ts,
+        eta_tt=eta_tt,
+        stage_loading=stage_loading,
+        P_03=P_03,
     )
 
 
-def solve_meanline(inputs: Inputs = Inputs()) -> MeanlineResult:
+def solve_meanline(inputs: Inputs = Inputs(), inlet: StageInlet = StageInlet()) -> MeanlineResult:
     """Size the rotor exit blade height so mass flow at station 3 equals m_dot.
 
     Radii and degree of reaction are inputs; the unknown is blade_height_3.
     """
-    def residual(h):
-        return _solve_states(h, inputs).residual
+    def residual(h: float) -> float:
+        return _solve_states(h, inputs, inlet).residual
 
     # residual(0) = +m_dot; it goes negative once the annulus can pass more than m_dot.
     h_max = 2 * inputs.radius_3  # hub radius -> 0
@@ -188,7 +221,7 @@ def solve_meanline(inputs: Inputs = Inputs()) -> MeanlineResult:
         raise ValueError("Cannot pass m_dot through the rotor exit even with hub radius 0; "
                          "check radius_3 / angles / reaction.")
     h_3 = brentq(residual, 1e-6, h_max, xtol=1e-12)
-    return _solve_states(h_3, inputs)
+    return _solve_states(h_3, inputs, inlet)
 
 def plot_velocity_triangles(result: MeanlineResult) -> None:
     """Show the velocity triangles at station 2 (stator exit / rotor inlet) and

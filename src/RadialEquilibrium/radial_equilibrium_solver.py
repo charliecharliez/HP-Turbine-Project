@@ -264,7 +264,7 @@ def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_ex
     law = VortexLaw.through_mean_swirl(vortex_exponent, annulus_2.mean_radius, mean_swirl_2,
                                        annulus_3.mean_radius, mean_swirl_3)
 
-    exit_static_pressure = bcs.P_01 / bcs.pressure_ratio_TS  # bar
+    exit_static_pressure = meanline.P_s3  # bar
     density_2 = meanline.P_s2 * BAR / (GAS.R * meanline.T_2)
     density_3 = exit_static_pressure * BAR / (GAS.R * meanline.T_3)
 
@@ -277,8 +277,8 @@ def solve_radial_equilibrium(meanline: MeanlineResult, inputs: Inputs, vortex_ex
         },
         mean_static_pressure={2: meanline.P_s2, 3: exit_static_pressure},
         omega=inputs.N_shaft * 2 * math.pi / 60,
-        inlet_total_temperature=bcs.T_01,
-        inlet_total_pressure=bcs.P_01,
+        inlet_total_temperature=meanline.T_01,
+        inlet_total_pressure=meanline.P_01,
     )
 
 

@@ -176,10 +176,6 @@ def annulus_area(hub_diameter: float, tip_diameter: float) -> float:  # m^2
     return math.pi / 4 * (tip_diameter**2 - hub_diameter**2)
 
 
-def turbine_exit_static_pressure(bcs: BC) -> float:  # bar
-    return bcs.P_01 / bcs.pressure_ratio_TS
-
-
 def subsonic_inlet_mach(mass_flow: float, area: float, total_temperature: float, total_pressure: float,
                         gas: GasProps) -> float:
     """Subsonic Mach number passing the mass flow [kg/s] through the area [m^2]; total pressure in Pa."""
@@ -389,10 +385,10 @@ def row_geometry(airfoil: AirfoilParams, meanline: MeanlineResult, height: float
 
 
 def stator_losses(meanline: MeanlineResult, inputs: Inputs, gas: GasProps = GAS,
-                  airfoil: AirfoilParams = STATOR_AIRFOIL, bcs: BC = boundary_conditions) -> RowLoss:
+                  airfoil: AirfoilParams = STATOR_AIRFOIL) -> RowLoss:
     """Kacker-Okapuu loss of the stator; its inlet annulus is taken equal to its exit annulus."""
     inlet_area = annulus_area(meanline.D_hub_2, meanline.D_tip_2)
-    inlet_mach = subsonic_inlet_mach(meanline.m_dot, inlet_area, bcs.T_01, bcs.P_01 * BAR, gas)
+    inlet_mach = subsonic_inlet_mach(meanline.m_dot, inlet_area, meanline.T_01, meanline.P_01 * BAR, gas)
     exit_density = static_density(meanline.P_s2, meanline.T_2, gas)
 
     geometry = row_geometry(
@@ -410,7 +406,7 @@ def stator_losses(meanline: MeanlineResult, inputs: Inputs, gas: GasProps = GAS,
         exit_angle=inputs.alpha_2,
         inlet_mach=inlet_mach,
         exit_mach=meanline.M_2,
-        inlet_static_pressure=bcs.P_01 / stagnation_pressure_ratio(inlet_mach, gas.gamma),
+        inlet_static_pressure=meanline.P_01 / stagnation_pressure_ratio(inlet_mach, gas.gamma),
         exit_static_pressure=meanline.P_s2,
         reynolds=exit_density * meanline.v_2 * geometry.chord / gas.mu,
         gamma=gas.gamma,
@@ -423,7 +419,7 @@ def rotor_losses(meanline: MeanlineResult, inputs: Inputs, gas: GasProps = GAS,
     """Kacker-Okapuu loss of the rotor, in the relative frame."""
     relative_inlet_angle = relative_flow_angle(meanline.v_2, inputs.alpha_2, meanline.u_2)
     relative_exit_angle = relative_flow_angle(meanline.v_3, meanline.alpha_3, meanline.u_3)
-    exit_static_pressure = turbine_exit_static_pressure(bcs)
+    exit_static_pressure = meanline.P_s3
     exit_density = static_density(exit_static_pressure, meanline.T_3, gas)
 
     geometry = row_geometry(
@@ -450,16 +446,15 @@ def rotor_losses(meanline: MeanlineResult, inputs: Inputs, gas: GasProps = GAS,
     return row_loss(geometry, flow)
 
 
-def stage_efficiency(meanline: MeanlineResult, rotor: RowLoss, gas: GasProps = GAS,
-                     bcs: BC = boundary_conditions) -> StageEfficiency:
+def stage_efficiency(meanline: MeanlineResult, rotor: RowLoss, gas: GasProps = GAS) -> StageEfficiency:
     """Uncooled stage efficiencies, with the unshrouded rotor tip-clearance debit applied."""
     exponent = (gas.gamma - 1) / gas.gamma
-    exit_static_pressure = turbine_exit_static_pressure(bcs)
+    exit_static_pressure = meanline.P_s3
     exit_total_pressure = exit_static_pressure * (meanline.T_03 / meanline.T_3) ** (1 / exponent)
-    total_temperature_drop = bcs.T_01 - meanline.T_03
+    total_temperature_drop = meanline.T_01 - meanline.T_03
 
-    ideal_drop_total = bcs.T_01 * (1 - (exit_total_pressure / bcs.P_01) ** exponent)
-    ideal_drop_static = bcs.T_01 * (1 - (exit_static_pressure / bcs.P_01) ** exponent)
+    ideal_drop_total = meanline.T_01 * (1 - (exit_total_pressure / meanline.P_01) ** exponent)
+    ideal_drop_static = meanline.T_01 * (1 - (exit_static_pressure / meanline.P_01) ** exponent)
     total_to_total = total_temperature_drop / ideal_drop_total
     total_to_static = total_temperature_drop / ideal_drop_static
     tip_clearance_factor = 1 - rotor.tip_efficiency_debit
