@@ -10,9 +10,9 @@ from typing import Literal
 import numpy as np
 from scipy.optimize import root_scalar
 
-from boundary_conditions import BC, boundary_conditions
-from Meanline.gas_props import GAS, GasProps
-from Meanline.solve_meanline import Inputs, MeanlineResult
+from boundary_conditions import boundary_conditions
+from Meanline.gas_props import GAS
+from Meanline.solve_meanline import MeanlineResult
 
 RowKind = Literal["stator", "rotor"]
 
@@ -148,12 +148,12 @@ class RowLoss:
 
 @dataclass(frozen=True)
 class StageEfficiency:
+    """Uncooled stage performance with the unshrouded rotor tip-clearance debit applied."""
+
     specific_work: float  # J/kg
-    exit_total_pressure: float  # bar
     total_to_total: float
     total_to_static: float
-    total_to_total_without_tip: float
-    total_to_static_without_tip: float
+    tip_clearance_debit: float  # fractional efficiency reduction
 
 
 # ---------------------------------------------------------------------------
@@ -164,42 +164,25 @@ def stagnation_pressure_ratio(mach: float, gamma: float) -> float:
     return (1 + (gamma - 1) / 2 * mach**2) ** (gamma / (gamma - 1))
 
 
-def mach_number(speed: float, static_temperature: float, gas: GasProps) -> float:
-    return speed / math.sqrt(gas.gamma * gas.R * static_temperature)
-
-
-def static_density(pressure: float, temperature: float, gas: GasProps) -> float:  # kg/m^3, pressure in bar
-    return pressure * BAR / (gas.R * temperature)
+def static_density(pressure: float, temperature: float) -> float:  # kg/m^3, pressure in bar
+    return pressure * BAR / (GAS.R * temperature)
 
 
 def annulus_area(hub_diameter: float, tip_diameter: float) -> float:  # m^2
     return math.pi / 4 * (tip_diameter**2 - hub_diameter**2)
 
 
-def turbine_exit_static_pressure(bcs: BC) -> float:  # bar
-    return bcs.P_01 / bcs.pressure_ratio_TS
-
-
-def subsonic_inlet_mach(mass_flow: float, area: float, total_temperature: float, total_pressure: float,
-                        gas: GasProps) -> float:
-    """Subsonic Mach number passing the mass flow [kg/s] through the area [m^2]; total pressure in Pa."""
-    gamma, R = gas.gamma, gas.R
+def subsonic_inlet_mach(mass_flow: float, area: float, total_temperature: float, total_pressure: float) -> float:
+    """Subsonic Mach number passing the mass flow [kg/s] through the area [m^2]; total pressure in bar."""
+    gamma, R = GAS.gamma, GAS.R
     choking_exponent = -(gamma + 1) / (2 * (gamma - 1))
 
     def mass_flow_at(mach: float) -> float:
         flow_function = mach * (1 + (gamma - 1) / 2 * mach**2) ** choking_exponent
-        return total_pressure * area * math.sqrt(gamma / (R * total_temperature)) * flow_function
+        return total_pressure * BAR * area * math.sqrt(gamma / (R * total_temperature)) * flow_function
 
     solution = root_scalar(lambda mach: mass_flow_at(mach) - mass_flow, bracket=(1e-6, 1.0), method="brentq")
     return solution.root
-
-
-def relative_flow_angle(absolute_speed: float, absolute_angle: float, blade_speed: float) -> float:
-    """Relative flow angle [deg] from the absolute speed and angle [deg], signed positive along rotation."""
-    absolute_angle_rad = math.radians(absolute_angle)
-    relative_tangential_speed = absolute_speed * math.sin(absolute_angle_rad) - blade_speed
-    axial_speed = absolute_speed * math.cos(absolute_angle_rad)
-    return math.degrees(math.atan2(relative_tangential_speed, axial_speed))
 
 
 def to_kacker_okapuu_angles(inlet_angle: float, exit_angle: float) -> tuple[float, float]:
@@ -304,8 +287,8 @@ def trailing_edge_loss(trailing_edge_throat: float, inlet_metal_angle: float, ex
     if not 0 <= trailing_edge_throat <= 0.4:
         warnings.append(f"Fig. 14: t_TE/o = {trailing_edge_throat:.3f} outside 0-0.4")
 
-    axial_inlet_energy_loss = max(0.0, np.interp(trailing_edge_throat, *AXIAL_INLET_TRAILING_EDGE.T))
-    impulse_energy_loss = max(0.0, np.interp(trailing_edge_throat, *IMPULSE_TRAILING_EDGE.T))
+    axial_inlet_energy_loss = max(0.0, float(np.interp(trailing_edge_throat, *AXIAL_INLET_TRAILING_EDGE.T)))
+    impulse_energy_loss = max(0.0, float(np.interp(trailing_edge_throat, *IMPULSE_TRAILING_EDGE.T)))
     energy_loss = blend_axial_inlet_and_impulse(axial_inlet_energy_loss, impulse_energy_loss,
                                                 inlet_metal_angle / exit_angle)
 
@@ -388,89 +371,71 @@ def row_geometry(airfoil: AirfoilParams, meanline: MeanlineResult, height: float
     )
 
 
-def stator_losses(meanline: MeanlineResult, inputs: Inputs, gas: GasProps = GAS,
-                  airfoil: AirfoilParams = STATOR_AIRFOIL, bcs: BC = boundary_conditions) -> RowLoss:
+def stator_losses(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRFOIL) -> RowLoss:
     """Kacker-Okapuu loss of the stator; its inlet annulus is taken equal to its exit annulus."""
     inlet_area = annulus_area(meanline.D_hub_2, meanline.D_tip_2)
-    inlet_mach = subsonic_inlet_mach(meanline.m_dot, inlet_area, bcs.T_01, bcs.P_01 * BAR, gas)
-    exit_density = static_density(meanline.P_s2, meanline.T_2, gas)
+    inlet_mach = subsonic_inlet_mach(meanline.m_dot, inlet_area, meanline.T_01, meanline.P_01)
+    exit_density = static_density(meanline.P_s2, meanline.T_2)
 
     geometry = row_geometry(
         airfoil,
         meanline,
         height=meanline.blade_height_2,
         inlet_angle=STATOR_INLET_FLOW_ANGLE,
-        exit_angle=inputs.alpha_2,
+        exit_angle=meanline.alpha_2,
         hub_diameter_exit=meanline.D_hub_2,
         tip_diameter_exit=meanline.D_tip_2,
     )
     flow = RowFlow(
         kind="stator",
         inlet_angle=STATOR_INLET_FLOW_ANGLE,
-        exit_angle=inputs.alpha_2,
+        exit_angle=meanline.alpha_2,
         inlet_mach=inlet_mach,
         exit_mach=meanline.M_2,
-        inlet_static_pressure=bcs.P_01 / stagnation_pressure_ratio(inlet_mach, gas.gamma),
+        inlet_static_pressure=meanline.P_01 / stagnation_pressure_ratio(inlet_mach, GAS.gamma),
         exit_static_pressure=meanline.P_s2,
-        reynolds=exit_density * meanline.v_2 * geometry.chord / gas.mu,
-        gamma=gas.gamma,
+        reynolds=exit_density * meanline.v_2 * geometry.chord / GAS.mu,
+        gamma=GAS.gamma,
     )
     return row_loss(geometry, flow)
 
 
-def rotor_losses(meanline: MeanlineResult, inputs: Inputs, gas: GasProps = GAS,
-                 airfoil: AirfoilParams = ROTOR_AIRFOIL, bcs: BC = boundary_conditions) -> RowLoss:
+def rotor_losses(meanline: MeanlineResult, airfoil: AirfoilParams = ROTOR_AIRFOIL) -> RowLoss:
     """Kacker-Okapuu loss of the rotor, in the relative frame."""
-    relative_inlet_angle = relative_flow_angle(meanline.v_2, inputs.alpha_2, meanline.u_2)
-    relative_exit_angle = relative_flow_angle(meanline.v_3, meanline.alpha_3, meanline.u_3)
-    exit_static_pressure = turbine_exit_static_pressure(bcs)
-    exit_density = static_density(exit_static_pressure, meanline.T_3, gas)
+    exit_density = static_density(meanline.P_s3, meanline.T_3)
 
     geometry = row_geometry(
         airfoil,
         meanline,
         height=meanline.blade_height_3,
-        inlet_angle=relative_inlet_angle,
-        exit_angle=relative_exit_angle,
+        inlet_angle=meanline.beta_2,
+        exit_angle=meanline.beta_3,
         hub_diameter_exit=meanline.D_hub_3,
         tip_diameter_exit=meanline.D_tip_3,
-        tip_clearance=bcs.rotor_tip_clearance_ratio * meanline.blade_height_3,
+        tip_clearance=boundary_conditions.rotor_tip_clearance_ratio * meanline.blade_height_3,
     )
     flow = RowFlow(
         kind="rotor",
-        inlet_angle=relative_inlet_angle,
-        exit_angle=relative_exit_angle,
+        inlet_angle=meanline.beta_2,
+        exit_angle=meanline.beta_3,
         inlet_mach=meanline.M_2rel,
-        exit_mach=mach_number(meanline.w_3, meanline.T_3, gas),
+        exit_mach=meanline.M_3rel,
         inlet_static_pressure=meanline.P_s2,
-        exit_static_pressure=exit_static_pressure,
-        reynolds=exit_density * meanline.w_3 * geometry.chord / gas.mu,
-        gamma=gas.gamma,
+        exit_static_pressure=meanline.P_s3,
+        reynolds=exit_density * meanline.w_3 * geometry.chord / GAS.mu,
+        gamma=GAS.gamma,
     )
     return row_loss(geometry, flow)
 
 
-def stage_efficiency(meanline: MeanlineResult, rotor: RowLoss, gas: GasProps = GAS,
-                     bcs: BC = boundary_conditions) -> StageEfficiency:
-    """Uncooled stage efficiencies, with the unshrouded rotor tip-clearance debit applied."""
-    exponent = (gas.gamma - 1) / gas.gamma
-    exit_static_pressure = turbine_exit_static_pressure(bcs)
-    exit_total_pressure = exit_static_pressure * (meanline.T_03 / meanline.T_3) ** (1 / exponent)
-    total_temperature_drop = bcs.T_01 - meanline.T_03
-
-    ideal_drop_total = bcs.T_01 * (1 - (exit_total_pressure / bcs.P_01) ** exponent)
-    ideal_drop_static = bcs.T_01 * (1 - (exit_static_pressure / bcs.P_01) ** exponent)
-    total_to_total = total_temperature_drop / ideal_drop_total
-    total_to_static = total_temperature_drop / ideal_drop_static
+def stage_efficiency(meanline: MeanlineResult, rotor: RowLoss) -> StageEfficiency:
+    """Meanline efficiencies and work reduced by the rotor tip-clearance debit."""
     tip_clearance_factor = 1 - rotor.tip_efficiency_debit
-
     return StageEfficiency(
-        specific_work=meanline.work_thermo,
-        exit_total_pressure=exit_total_pressure,
-        total_to_total=total_to_total * tip_clearance_factor,
-        total_to_static=total_to_static * tip_clearance_factor,
-        total_to_total_without_tip=total_to_total,
-        total_to_static_without_tip=total_to_static,
+        specific_work=meanline.work_thermo * tip_clearance_factor,
+        total_to_total=meanline.eta_tt * tip_clearance_factor,
+        total_to_static=meanline.eta_ts * tip_clearance_factor,
+        tip_clearance_debit=rotor.tip_efficiency_debit,
     )
 
 

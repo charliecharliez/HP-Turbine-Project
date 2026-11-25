@@ -11,13 +11,13 @@ S_IN = CoolProp.PropsSI("SMASS", "T", T_IN, "P", P_IN, "Air")
 T_OUT_S = CoolProp.PropsSI("T", "P", P_OUT, "SMASS", S_IN, "Air")  # K, isentropic exit
 
 
-def _cp_gamma(T, p):
+def _cp_gamma(T: float, p: float) -> tuple[float, float]:  # T in K, p in Pa
     cp = CoolProp.PropsSI("CPMASS", "T", T, "P", p, "Air")
     cv = CoolProp.PropsSI("CVMASS", "T", T, "P", p, "Air")
     return cp, cp / cv
 
 
-def _mu(T, p):
+def _mu(T: float, p: float) -> float:  # T in K, p in Pa
     return CoolProp.PropsSI("VISCOSITY", "T", T, "P", p, "Air")
 
 
