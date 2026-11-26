@@ -21,19 +21,107 @@ DOWNSTREAM_INPUTS = Inputs(pressure_ratio=2.0, alpha_2=68.0, beta_3=-58.0, N_sha
 
 
 class MeanlineTests(unittest.TestCase):
+    def test_averaged_gas_properties_preserve_the_perfect_gas_identity(self) -> None:
+        self.assertAlmostEqual(
+            GAS.C_p,
+            GAS.gamma * GAS.R / (GAS.gamma - 1),
+            places=8,
+        )
+
     def test_continuity_and_energy_close(self) -> None:
         meanline = solve_meanline()
 
         self.assertLess(abs(meanline.residual), 1e-9)
         self.assertAlmostEqual(meanline.work_euler, meanline.work_thermo, delta=1e-6 * meanline.work_thermo)
 
+    def test_stator_total_temperature_and_mass_flow_close(self) -> None:
+        cases = (
+            (Inputs(), StageInlet()),
+            (DOWNSTREAM_INPUTS, DOWNSTREAM_INLET),
+        )
+        for inputs, inlet in cases:
+            meanline = solve_meanline(inputs, inlet)
+            axial_velocity = meanline.v_2 * math.cos(math.radians(meanline.alpha_2))
+            density = meanline.P_s2 * 1e5 / (GAS.R * meanline.T_2)
+            area = 2 * math.pi * inputs.radius_2 * meanline.blade_height_2
+            with self.subTest(inputs=inputs):
+                self.assertAlmostEqual(
+                    meanline.T_2 + meanline.v_2**2 / (2 * GAS.C_p),
+                    meanline.T_01,
+                    places=10,
+                )
+                self.assertAlmostEqual(density * axial_velocity * area, inlet.m_dot, places=8)
+
+    def test_rotor_rothalpy_and_euler_work_close_at_unequal_radii(self) -> None:
+        cases = (
+            (Inputs(), StageInlet()),
+            (DOWNSTREAM_INPUTS, DOWNSTREAM_INLET),
+        )
+        for inputs, inlet in cases:
+            meanline = solve_meanline(inputs, inlet)
+            c_theta_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
+            c_theta_3 = meanline.u_3 + meanline.w_3 * math.sin(math.radians(meanline.beta_3))
+            euler_work = meanline.u_2 * c_theta_2 - meanline.u_3 * c_theta_3
+            rothalpy_in = GAS.C_p * meanline.T_2 + (
+                meanline.w_2**2 - meanline.u_2**2
+            ) / 2
+            rothalpy_out = GAS.C_p * meanline.T_3 + (
+                meanline.w_3**2 - meanline.u_3**2
+            ) / 2
+            with self.subTest(inputs=inputs):
+                self.assertAlmostEqual(meanline.work_euler, euler_work, places=8)
+                self.assertAlmostEqual(meanline.work_thermo, euler_work, places=7)
+                self.assertAlmostEqual(rothalpy_in, rothalpy_out, places=7)
+
+    def test_reaction_and_efficiencies_match_isentropic_pressure_relations(self) -> None:
+        inputs = Inputs()
+        meanline = solve_meanline(inputs)
+        exponent = (GAS.gamma - 1) / GAS.gamma
+        isentropic_exit_temperature = meanline.T_01 * (
+            meanline.P_s3 / meanline.P_01
+        ) ** exponent
+        isentropic_stator_exit_temperature = meanline.T_01 * (
+            meanline.P_s2 / meanline.P_01
+        ) ** exponent
+        reaction = (
+            isentropic_stator_exit_temperature - isentropic_exit_temperature
+        ) / (meanline.T_01 - isentropic_exit_temperature)
+        expected_eta_ts = (meanline.T_01 - meanline.T_03) / (
+            meanline.T_01
+            * (1 - (meanline.P_s3 / meanline.P_01) ** exponent)
+        )
+        expected_eta_tt = (meanline.T_01 - meanline.T_03) / (
+            meanline.T_01
+            * (1 - (meanline.P_03 / meanline.P_01) ** exponent)
+        )
+        expected_exit_total_pressure = meanline.P_s3 * (
+            meanline.T_03 / meanline.T_3
+        ) ** (GAS.gamma / (GAS.gamma - 1))
+
+        self.assertAlmostEqual(reaction, inputs.degree_of_reaction, places=12)
+        self.assertAlmostEqual(meanline.eta_ts, expected_eta_ts, places=12)
+        self.assertAlmostEqual(meanline.eta_tt, expected_eta_tt, places=12)
+        self.assertAlmostEqual(meanline.P_03, expected_exit_total_pressure, places=12)
+
     def test_signed_angles_and_mach_numbers(self) -> None:
         inputs = Inputs()
         meanline = solve_meanline(inputs)
         speed_of_sound_3 = math.sqrt(GAS.gamma * GAS.R * meanline.T_3)
+        c_x_2 = meanline.v_2 * math.cos(math.radians(meanline.alpha_2))
+        c_theta_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
+        c_x_3 = meanline.w_3 * math.cos(math.radians(meanline.beta_3))
+        c_theta_3 = meanline.u_3 + meanline.w_3 * math.sin(math.radians(meanline.beta_3))
 
         self.assertEqual(meanline.beta_3, inputs.beta_3)
         self.assertGreater(meanline.beta_2, 0.0)
+        self.assertAlmostEqual(
+            meanline.beta_2,
+            math.degrees(math.atan2(c_theta_2 - meanline.u_2, c_x_2)),
+        )
+        self.assertAlmostEqual(
+            meanline.alpha_3,
+            math.degrees(math.atan2(c_theta_3, c_x_3)),
+        )
         self.assertAlmostEqual(meanline.M_3rel, meanline.w_3 / speed_of_sound_3)
 
 

@@ -73,7 +73,11 @@ IMPULSE_TRAILING_EDGE = load_chart("ko_fig14_te_impulse.csv")  # Fig. 14, (t_TE/
 
 KO_DESIGN_LEVEL_FACTOR = 0.914  # KO scaling of profile losses to 1982 design standards
 KO_PROFILE_REDUCTION = 2 / 3  # KO reduction of the Ainley-Mathieson profile loss
-HUB_MACH_FACTOR: dict[RowKind, float] = {"stator": 1.8, "rotor": 5.2}  # K in M_hub / M = 1 + K |r_hub/r_tip - 1|^2.2
+HUB_TIP_RATIOS = (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+HUB_TO_MEAN_MACH_RATIO: dict[RowKind, tuple[float, ...]] = {
+    "stator": (1.4, 1.18, 1.05, 1.0, 1.0, 1.0),
+    "rotor": (2.15, 1.7, 1.35, 1.12, 1.0, 1.0),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -215,10 +219,16 @@ def blend_axial_inlet_and_impulse(axial_inlet_value: float, impulse_value: float
     return axial_inlet_value + abs(metal_exit_ratio) * metal_exit_ratio * (impulse_value - axial_inlet_value)
 
 
+def _metal_exit_ratio(inlet_metal_angle: float, exit_angle: float) -> float:
+    if exit_angle == 0:
+        raise ValueError("Kacker-Okapuu angle interpolation requires a nonzero exit angle.")
+    return inlet_metal_angle / exit_angle
+
+
 def ainley_mathieson_profile_loss(geometry: RowGeometry, inlet_metal_angle: float, exit_angle: float,
                                   warnings: list[str]) -> float:
     """Ainley-Mathieson profile loss Y_p,AMDC from the axial-inlet and impulse charts."""
-    metal_exit_ratio = inlet_metal_angle / exit_angle
+    metal_exit_ratio = _metal_exit_ratio(inlet_metal_angle, exit_angle)
     axial_inlet_loss = AXIAL_INLET_PROFILE_LOSS.profile_loss(geometry.pitch_chord, exit_angle, warnings)
     impulse_loss = axial_inlet_loss
     if metal_exit_ratio != 0:
@@ -230,6 +240,8 @@ def ainley_mathieson_profile_loss(geometry: RowGeometry, inlet_metal_angle: floa
 
 
 def reynolds_correction(reynolds: float) -> float:
+    if reynolds <= 0:
+        raise ValueError("Reynolds number must be positive.")
     if reynolds <= 2e5:
         return (reynolds / 2e5) ** -0.4
     if reynolds < 1e6:
@@ -239,6 +251,8 @@ def reynolds_correction(reynolds: float) -> float:
 
 def compressibility_correction(inlet_mach: float, exit_mach: float) -> float:
     """KO channel-acceleration factor K_p."""
+    if inlet_mach < 0 or exit_mach <= 0:
+        raise ValueError("Inlet Mach must be nonnegative and exit Mach must be positive.")
     exit_mach_factor = 1.0 if exit_mach <= 0.2 else max(0.0, 1 - 1.25 * (exit_mach - 0.2))
     inlet_exit_mach_ratio = inlet_mach / exit_mach
     return 1 - inlet_exit_mach_ratio**2 * (1 - exit_mach_factor)
@@ -249,10 +263,18 @@ def supersonic_profile_factor(exit_mach: float) -> float:
     return 1.0 if exit_mach <= 1.0 else 1 + 60 * (exit_mach - 1) ** 2
 
 
-def hub_shock_loss(geometry: RowGeometry, flow: RowFlow) -> float:
+def hub_mach_factor(hub_tip_ratio: float, kind: RowKind, warnings: list[str]) -> float:
+    if not HUB_TIP_RATIOS[0] <= hub_tip_ratio <= HUB_TIP_RATIOS[-1]:
+        warnings.append(
+            f"Fig. 6: hub-to-tip ratio {hub_tip_ratio:.3f} outside "
+            f"{HUB_TIP_RATIOS[0]:.1f}-{HUB_TIP_RATIOS[-1]:.1f}"
+        )
+    return float(np.interp(hub_tip_ratio, HUB_TIP_RATIOS, HUB_TO_MEAN_MACH_RATIO[kind]))
+
+
+def hub_shock_loss(geometry: RowGeometry, flow: RowFlow, warnings: list[str]) -> float:
     """KO inlet shock loss driven by the hub inlet Mach number."""
-    hub_mach_rise = HUB_MACH_FACTOR[flow.kind] * abs(geometry.hub_tip_ratio_inlet - 1) ** 2.2
-    inlet_hub_mach = flow.inlet_mach * (1 + hub_mach_rise)
+    inlet_hub_mach = flow.inlet_mach * hub_mach_factor(geometry.hub_tip_ratio_inlet, flow.kind, warnings)
     if inlet_hub_mach <= 0.4:
         return 0.0
 
@@ -284,13 +306,13 @@ def secondary_loss(geometry: RowGeometry, inlet_angle: float, exit_angle: float,
 
 def trailing_edge_loss(trailing_edge_throat: float, inlet_metal_angle: float, exit_angle: float,
                        exit_mach: float, gamma: float, warnings: list[str]) -> float:
+    metal_exit_ratio = _metal_exit_ratio(inlet_metal_angle, exit_angle)
     if not 0 <= trailing_edge_throat <= 0.4:
         warnings.append(f"Fig. 14: t_TE/o = {trailing_edge_throat:.3f} outside 0-0.4")
 
     axial_inlet_energy_loss = max(0.0, float(np.interp(trailing_edge_throat, *AXIAL_INLET_TRAILING_EDGE.T)))
     impulse_energy_loss = max(0.0, float(np.interp(trailing_edge_throat, *IMPULSE_TRAILING_EDGE.T)))
-    energy_loss = blend_axial_inlet_and_impulse(axial_inlet_energy_loss, impulse_energy_loss,
-                                                inlet_metal_angle / exit_angle)
+    energy_loss = blend_axial_inlet_and_impulse(axial_inlet_energy_loss, impulse_energy_loss, metal_exit_ratio)
 
     exponent = -gamma / (gamma - 1)
     exit_dynamic_term = (gamma - 1) / 2 * exit_mach**2
@@ -322,7 +344,7 @@ def row_loss(geometry: RowGeometry, flow: RowFlow) -> RowLoss:
     supersonic_factor = supersonic_profile_factor(flow.exit_mach)
     ainley_mathieson_loss = ainley_mathieson_profile_loss(geometry, inlet_metal_angle, exit_angle, warnings)
     profile = KO_DESIGN_LEVEL_FACTOR * KO_PROFILE_REDUCTION * ainley_mathieson_loss * mach_correction * reynolds_factor
-    hub_shock = KO_DESIGN_LEVEL_FACTOR * hub_shock_loss(geometry, flow) * reynolds_factor
+    hub_shock = KO_DESIGN_LEVEL_FACTOR * hub_shock_loss(geometry, flow, warnings) * reynolds_factor
     supersonic = (supersonic_factor - 1) * (profile + hub_shock)
 
     secondary = secondary_loss(geometry, inlet_angle, exit_angle, inlet_metal_angle, mach_correction)

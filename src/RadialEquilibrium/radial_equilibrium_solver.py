@@ -79,18 +79,28 @@ class VortexLaw:
         return self.a * radius**self.exponent + SWIRL_SIGN[station] * self.b / radius
 
     def axial_velocity_squared_shape(self, radius: Radius, station: Station) -> Radius:
-        """Cx^2 up to an additive constant, from radial equilibrium with uniform total enthalpy and entropy."""
+        """Base Cx^2 shape up to an additive constant for uniform total enthalpy and entropy."""
         n = self.exponent
         power_term = self.a * antiderivative_of_power(radius, 2 * n - 1)
         inverse_radius_term = SWIRL_SIGN[station] * self.b * antiderivative_of_power(radius, n - 2)
         return -2 * self.a * (n + 1) * (power_term + inverse_radius_term)
 
 
+def _specific_work(law: VortexLaw, annulus_2: Annulus, annulus_3: Annulus, omega: float,
+                   rotor_exit_radius: Radius) -> Radius:
+    stator_exit_radius = annulus_2.radius_at(annulus_3.span_fraction(rotor_exit_radius))
+    angular_momentum_2 = stator_exit_radius * law.tangential_velocity(stator_exit_radius, 2)
+    angular_momentum_3 = rotor_exit_radius * law.tangential_velocity(rotor_exit_radius, 3)
+    return omega * (angular_momentum_2 - angular_momentum_3)
+
+
 def axial_velocity_constant(law: VortexLaw, station: Station, annulus: Annulus, mass_flow: float,
-                            density: float) -> float:
+                            density: float, shape_adjustment: Callable[[Radius], Radius] | None = None) -> float:
     """Constant C in Cx^2 = shape(r) + C that passes the mass flow [kg/s], with density held at its meanline value."""
     radii = annulus.radial_grid()
     shape = law.axial_velocity_squared_shape(radii, station)
+    if shape_adjustment is not None:
+        shape = shape + shape_adjustment(radii)
 
     def mass_flow_error(constant: float) -> float:
         axial_velocity = np.sqrt(shape + constant)
@@ -168,6 +178,8 @@ class SpanwiseFlow:
 
     def axial_velocity(self, radius: Radius, station: Station) -> Radius:
         shape = self.law.axial_velocity_squared_shape(radius, station)
+        if station == 3:
+            shape = shape - 2 * self.specific_work(radius)
         return np.sqrt(shape + self.axial_velocity_constant[station])
 
     def stator_exit_radius(self, rotor_exit_radius: Radius) -> Radius:
@@ -175,10 +187,7 @@ class SpanwiseFlow:
         return self.annulus[2].radius_at(self.annulus[3].span_fraction(rotor_exit_radius))
 
     def specific_work(self, rotor_exit_radius: Radius) -> Radius:  # J/kg
-        stator_exit_radius = self.stator_exit_radius(rotor_exit_radius)
-        angular_momentum_2 = stator_exit_radius * self.law.tangential_velocity(stator_exit_radius, 2)
-        angular_momentum_3 = rotor_exit_radius * self.law.tangential_velocity(rotor_exit_radius, 3)
-        return self.omega * (angular_momentum_2 - angular_momentum_3)
+        return _specific_work(self.law, self.annulus[2], self.annulus[3], self.omega, rotor_exit_radius)
 
     def mass_averaged_specific_work(self) -> float:  # J/kg
         """Rotor work averaged over the rotor-exit mass flow, with density held at its meanline value as in continuity."""
@@ -254,7 +263,7 @@ class SpanwiseFlow:
 # Meanline solution -> spanwise flow
 # ---------------------------------------------------------------------------
 def solve_radial_equilibrium(meanline: MeanlineResult, vortex_exponent: float = FREE_VORTEX) -> SpanwiseFlow:
-    """Spanwise flow whose swirl, mass flow and static pressure match the meanline at the mean radii."""
+    """Spanwise flow anchored to meanline swirl and pressure, with continuity calibrated at meanline density."""
     annulus_2 = Annulus.from_diameters(meanline.D_hub_2, meanline.D_tip_2)
     annulus_3 = Annulus.from_diameters(meanline.D_hub_3, meanline.D_tip_3)
     mean_swirl_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
@@ -265,12 +274,17 @@ def solve_radial_equilibrium(meanline: MeanlineResult, vortex_exponent: float = 
     density_2 = meanline.P_s2 * BAR / (GAS.R * meanline.T_2)
     density_3 = meanline.P_s3 * BAR / (GAS.R * meanline.T_3)
 
+    def rotor_shape_adjustment(radius: Radius) -> Radius:
+        return -2 * _specific_work(law, annulus_2, annulus_3, meanline.omega, radius)
+
     return SpanwiseFlow(
         law=law,
         annulus={2: annulus_2, 3: annulus_3},
         axial_velocity_constant={
             2: axial_velocity_constant(law, 2, annulus_2, meanline.m_dot, density_2),
-            3: axial_velocity_constant(law, 3, annulus_3, meanline.m_dot, density_3),
+            3: axial_velocity_constant(
+                law, 3, annulus_3, meanline.m_dot, density_3, rotor_shape_adjustment
+            ),
         },
         mean_static_pressure={2: meanline.P_s2, 3: meanline.P_s3},
         omega=meanline.omega,

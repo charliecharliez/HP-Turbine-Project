@@ -21,19 +21,22 @@ def _mu(T: float, p: float) -> float:  # T in K, p in Pa
     return CoolProp.PropsSI("VISCOSITY", "T", T, "P", p, "Air")
 
 
-_CP_IN, _GAMMA_IN = _cp_gamma(T_IN, P_IN)
-_CP_OUT, _GAMMA_OUT = _cp_gamma(T_OUT_S, P_OUT)
+_CP_IN, _ = _cp_gamma(T_IN, P_IN)
+_CP_OUT, _ = _cp_gamma(T_OUT_S, P_OUT)
 _MU_IN = _mu(T_IN, P_IN)
 _MU_OUT = _mu(T_OUT_S, P_OUT)
+_AVERAGE_CP = 0.5 * (_CP_IN + _CP_OUT)
+_AIR_GAS_CONSTANT = CoolProp.PropsSI("GAS_CONSTANT", "Air") / CoolProp.PropsSI("MOLAR_MASS", "Air")
+_CONSISTENT_GAMMA = _AVERAGE_CP / (_AVERAGE_CP - _AIR_GAS_CONSTANT)
 
 
 @dataclass(frozen=True)
 class GasProps:
-    # Averaged properties between the inlet (total) and the isentropic exit
-    gamma: float = 0.5 * (_GAMMA_IN + _GAMMA_OUT)  # ratio of specific heats
-    C_p: float = 0.5 * (_CP_IN + _CP_OUT)  # J/(kg*K)
-    R: float = CoolProp.PropsSI("GAS_CONSTANT", "Air") / CoolProp.PropsSI("MOLAR_MASS", "Air")  # J/(kg*K)
+    gamma: float = _CONSISTENT_GAMMA  # ratio of specific heats
+    C_p: float = _AVERAGE_CP  # J/(kg*K)
+    R: float = _AIR_GAS_CONSTANT  # J/(kg*K)
     mu: float = 0.5 * (_MU_IN + _MU_OUT)  # Pa*s, dynamic viscosity
+
 
 GAS = GasProps()
 
