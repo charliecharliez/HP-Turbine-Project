@@ -168,6 +168,7 @@ class SpanwiseFlow:
     omega: float  # rad/s
     inlet_total_temperature: float  # K
     inlet_total_pressure: float  # bar
+    stator_inlet_angle: float  # deg, absolute, uniform across the span
 
     def degree_of_reaction(self, stator_exit_pressure: float, rotor_exit_pressure: float) -> float:
         """Meanline definition, inverting its P_s2 = P_01 (1 - (1 - R)(1 - (P_s3 / P_01)^((k-1)/k)))^(k/(k-1))."""
@@ -290,6 +291,7 @@ def solve_radial_equilibrium(meanline: MeanlineResult, vortex_exponent: float = 
         omega=meanline.omega,
         inlet_total_temperature=meanline.T_01,
         inlet_total_pressure=meanline.P_01,
+        stator_inlet_angle=meanline.alpha_1,
     )
 
 

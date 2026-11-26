@@ -13,8 +13,7 @@ from scipy.spatial import KDTree
 from Airfoil.bezier import bezier_derivative, bezier_points
 from Airfoil.camberline import Camberline
 from Empirical.StaggerKO import beta_1_range, beta_2_range, get_stagger
-from Losses.losses_solver import (STATOR_INLET_FLOW_ANGLE, AirfoilParams, RowKind, to_kacker_okapuu_angles,
-                                  zweifel_pitch_chord)
+from Losses.losses_solver import AirfoilParams, RowKind, to_kacker_okapuu_angles, zweifel_pitch_chord
 from Meanline.gas_props import GAS
 from RadialEquilibrium.radial_equilibrium_solver import SpanwiseFlow
 
@@ -490,7 +489,7 @@ def stator_section_flows(flow: SpanwiseFlow) -> list[SectionFlow]:
     sections = []
     for span_fraction in SPAN_FRACTIONS.values():
         stator_exit = flow.at_span(span_fraction).stator_exit
-        sections.append(SectionFlow(span_fraction, stator_exit.radius, STATOR_INLET_FLOW_ANGLE,
+        sections.append(SectionFlow(span_fraction, stator_exit.radius, flow.stator_inlet_angle,
                                     stator_exit.absolute_angle, stator_exit.mach))
     return sections
 
