@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from scipy.optimize import root_scalar
 
 from boundary_conditions import boundary_conditions
 from Meanline.gas_props import GAS
@@ -17,7 +16,6 @@ from Meanline.solve_meanline import MeanlineResult
 RowKind = Literal["stator", "rotor"]
 
 BAR = 1e5  # Pa
-STATOR_INLET_FLOW_ANGLE = 0.0  # deg, axial inlet per the boundary conditions
 
 
 # ---------------------------------------------------------------------------
@@ -166,23 +164,6 @@ def stagnation_pressure_ratio(mach: float, gamma: float) -> float:
 
 def static_density(pressure: float, temperature: float) -> float:  # kg/m^3, pressure in bar
     return pressure * BAR / (GAS.R * temperature)
-
-
-def annulus_area(hub_diameter: float, tip_diameter: float) -> float:  # m^2
-    return math.pi / 4 * (tip_diameter**2 - hub_diameter**2)
-
-
-def subsonic_inlet_mach(mass_flow: float, area: float, total_temperature: float, total_pressure: float) -> float:
-    """Subsonic Mach number passing the mass flow [kg/s] through the area [m^2]; total pressure in bar."""
-    gamma, R = GAS.gamma, GAS.R
-    choking_exponent = -(gamma + 1) / (2 * (gamma - 1))
-
-    def mass_flow_at(mach: float) -> float:
-        flow_function = mach * (1 + (gamma - 1) / 2 * mach**2) ** choking_exponent
-        return total_pressure * BAR * area * math.sqrt(gamma / (R * total_temperature)) * flow_function
-
-    solution = root_scalar(lambda mach: mass_flow_at(mach) - mass_flow, bracket=(1e-6, 1.0), method="brentq")
-    return solution.root
 
 
 def to_kacker_okapuu_angles(inlet_angle: float, exit_angle: float) -> tuple[float, float]:
@@ -372,27 +353,25 @@ def row_geometry(airfoil: AirfoilParams, meanline: MeanlineResult, height: float
 
 
 def stator_losses(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRFOIL) -> RowLoss:
-    """Kacker-Okapuu loss of the stator; its inlet annulus is taken equal to its exit annulus."""
-    inlet_area = annulus_area(meanline.D_hub_2, meanline.D_tip_2)
-    inlet_mach = subsonic_inlet_mach(meanline.m_dot, inlet_area, meanline.T_01, meanline.P_01)
+    """Kacker-Okapuu loss of the stator, from the stage inlet state to the stator exit."""
     exit_density = static_density(meanline.P_s2, meanline.T_2)
 
     geometry = row_geometry(
         airfoil,
         meanline,
         height=meanline.blade_height_2,
-        inlet_angle=STATOR_INLET_FLOW_ANGLE,
+        inlet_angle=meanline.alpha_1,
         exit_angle=meanline.alpha_2,
         hub_diameter_exit=meanline.D_hub_2,
         tip_diameter_exit=meanline.D_tip_2,
     )
     flow = RowFlow(
         kind="stator",
-        inlet_angle=STATOR_INLET_FLOW_ANGLE,
+        inlet_angle=meanline.alpha_1,
         exit_angle=meanline.alpha_2,
-        inlet_mach=inlet_mach,
+        inlet_mach=meanline.M_1,
         exit_mach=meanline.M_2,
-        inlet_static_pressure=meanline.P_01 / stagnation_pressure_ratio(inlet_mach, GAS.gamma),
+        inlet_static_pressure=meanline.P_01 / stagnation_pressure_ratio(meanline.M_1, GAS.gamma),
         exit_static_pressure=meanline.P_s2,
         reynolds=exit_density * meanline.v_2 * geometry.chord / GAS.mu,
         gamma=GAS.gamma,

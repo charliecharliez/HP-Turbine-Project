@@ -1,7 +1,7 @@
 """Single-stage design loop: meanline, radial equilibrium, blade rows and losses iterated to consistent loss coefficients."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 
 from Airfoil.airfoil import (ROTOR_DESIGN, STATOR_DESIGN, BladeRow, BladeRowDesign, print_blade_row, rotor_row,
@@ -45,14 +45,21 @@ class StageEvaluation:
 
     @property
     def loss_change(self) -> float:
-        """Largest difference between the loss coefficients used and those predicted."""
-        stator_change = abs(self.stator_loss.kinetic_loss - self.inputs.loss_kinetic_stator)
-        rotor_change = abs(self.rotor_loss.kinetic_loss - self.inputs.loss_kinetic_rotor)
-        return max(stator_change, rotor_change)
+        return loss_change(self.inputs, self.stator_loss, self.rotor_loss)
 
     def inputs_with_predicted_losses(self) -> Inputs:
-        return replace(self.inputs, loss_kinetic_stator=self.stator_loss.kinetic_loss,
-                       loss_kinetic_rotor=self.rotor_loss.kinetic_loss)
+        return inputs_with_losses(self.inputs, self.stator_loss, self.rotor_loss)
+
+
+def loss_change(inputs: Inputs, stator_loss: RowLoss, rotor_loss: RowLoss) -> float:
+    """Largest difference between the loss coefficients used and those predicted."""
+    stator_change = abs(stator_loss.kinetic_loss - inputs.loss_kinetic_stator)
+    rotor_change = abs(rotor_loss.kinetic_loss - inputs.loss_kinetic_rotor)
+    return max(stator_change, rotor_change)
+
+
+def inputs_with_losses(inputs: Inputs, stator_loss: RowLoss, rotor_loss: RowLoss) -> Inputs:
+    return replace(inputs, loss_kinetic_stator=stator_loss.kinetic_loss, loss_kinetic_rotor=rotor_loss.kinetic_loss)
 
 
 @dataclass(frozen=True)
@@ -145,6 +152,9 @@ STAGE_SUMMARY_ROWS: tuple[tuple[str, Callable[[StageSolution], float], str], ...
     ("Flow coefficient", lambda solution: solution.final.meanline.flow_coefficient, ".3f"),
     ("Stage loading", lambda solution: solution.final.meanline.stage_loading, ".3f"),
     ("Degree of reaction", lambda solution: solution.final.inputs.degree_of_reaction, ".3f"),
+    ("Pressure ratio P_01/P_s3", lambda solution: solution.final.inputs.pressure_ratio, ".3f"),
+    ("alpha_1 [deg]", lambda solution: solution.final.meanline.alpha_1, ".2f"),
+    ("M_1", lambda solution: solution.final.meanline.M_1, ".3f"),
     ("alpha_2 [deg]", lambda solution: solution.final.meanline.alpha_2, ".2f"),
     ("beta_2 [deg]", lambda solution: solution.final.meanline.beta_2, ".2f"),
     ("alpha_3 [deg]", lambda solution: solution.final.meanline.alpha_3, ".2f"),
@@ -185,9 +195,14 @@ def print_stage_report(solution: StageSolution) -> None:
     print()
     print_blade_row(solution.final.rotor)
 
-    print(f"\n{'Constraint':<32}{'value':>14}{'limit':>14}  status")
-    for constraint in solution.constraints:
+    print()
+    print_constraints(solution.constraints)
+    print(f"Stage is {'feasible' if solution.feasible else 'NOT feasible'} (cooling and metal temperature not checked)")
+
+
+def print_constraints(constraints: Sequence[Constraint]) -> None:
+    print(f"{'Constraint':<36}{'value':>12}{'limit':>14}  status")
+    for constraint in constraints:
         comparison = "<=" if constraint.is_upper_limit else ">="
         status = "ok" if constraint.satisfied else "VIOLATED"
-        print(f"{constraint.name:<32}{constraint.value:>14.4g}{comparison:>4}{constraint.limit:>10.4g}  {status}")
-    print(f"Design is {'feasible' if solution.feasible else 'NOT feasible'} (cooling and metal temperature not checked)")
+        print(f"{constraint.name:<36}{constraint.value:>12.4g}{comparison:>4}{constraint.limit:>10.4g}  {status}")

@@ -16,5 +16,8 @@ class BC:
 
     max_AN2: float = 3.2e7  # rotor exit annulus area times rotational speed^2 [m^2 rpm^2]
 
+    rig_min_hub_tip_ratio: float = 0.70  # AMBRA, for the rotor it tests
+    rig_max_hub_tip_ratio: float = 0.94
+
 
 boundary_conditions = BC()

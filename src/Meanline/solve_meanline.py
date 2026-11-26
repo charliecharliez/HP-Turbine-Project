@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import matplotlib.pyplot as plt
-from scipy.optimize import brentq
+from scipy.optimize import brentq, root_scalar
 
 from boundary_conditions import boundary_conditions
 from velocity_triangle import VelocityTriangle
@@ -34,6 +34,8 @@ class StageInlet:
     T_0: float = boundary_conditions.T_01  # K
     P_0: float = boundary_conditions.P_01  # bar
     m_dot: float = boundary_conditions.m_dot  # kg/s
+    alpha: float = 0.0  # deg, absolute flow angle
+    mach: float | None = None  # absolute; None estimates it from continuity through the stator exit annulus
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,10 @@ class MeanlineResult:
     residual: float  # kg/s, m_dot minus the rotor exit mass flow
     m_dot: float  # kg/s
     omega: float  # rad/s
+
+    # Stage inlet
+    alpha_1: float  # deg
+    M_1: float
 
     # Thermodynamic states (K, bar)
     T_01: float
@@ -84,6 +90,23 @@ class MeanlineResult:
     eta_tt: float  # before the rotor tip-clearance debit
     stage_loading: float  # work_euler / u_mean^2
     flow_coefficient: float  # mean axial velocity across the rotor / u_mean
+
+    def exit_state(self) -> StageInlet:
+        """Rotor exit flow as the inlet of a following stage."""
+        return StageInlet(T_0=self.T_03, P_0=self.P_03, m_dot=self.m_dot, alpha=self.alpha_3, mach=self.M_3)
+
+
+def subsonic_mach_number(mass_flow: float, area: float, total_temperature: float, total_pressure: float) -> float:
+    """Subsonic axial Mach number passing the mass flow [kg/s] through the area [m^2]; total pressure in bar."""
+    gamma, R = GAS.gamma, GAS.R
+    choking_exponent = -(gamma + 1) / (2 * (gamma - 1))
+
+    def mass_flow_at(mach: float) -> float:
+        flow_function = mach * (1 + (gamma - 1) / 2 * mach**2) ** choking_exponent
+        return total_pressure * BAR * area * math.sqrt(gamma / (R * total_temperature)) * flow_function
+
+    solution = root_scalar(lambda mach: mass_flow_at(mach) - mass_flow, bracket=(1e-6, 1.0), method="brentq")
+    return solution.root
 
 
 def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> MeanlineResult:
@@ -135,6 +158,8 @@ def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> M
         residual=m_dot - density_3 * v_x3 * area_3,
         m_dot=m_dot,
         omega=omega,
+        alpha_1=inlet.alpha,
+        M_1=math.nan if inlet.mach is None else inlet.mach,
         T_01=T_01, P_01=P_01, P_s2=P_s2, T_2=T_2, P_s3=P_s3, T_3=T_3, T_03=T_03, P_03=P_03,
         v_2=v_2, w_2=w_2, u_2=u_2,
         alpha_2=inputs.alpha_2,
@@ -172,7 +197,11 @@ def solve_meanline(inputs: Inputs = Inputs(), inlet: StageInlet = StageInlet()) 
         raise ValueError("Cannot pass m_dot through the rotor exit even with hub radius 0; "
                          "check radius_3 / angles / reaction.")
     blade_height_3 = brentq(residual, 1e-6, largest_blade_height, xtol=1e-12)
-    return _solve_states(blade_height_3, inputs, inlet)
+    states = _solve_states(blade_height_3, inputs, inlet)
+    if inlet.mach is not None:
+        return states
+    stator_exit_area = 2 * math.pi * inputs.radius_2 * states.blade_height_2
+    return replace(states, M_1=subsonic_mach_number(inlet.m_dot, stator_exit_area, inlet.T_0, inlet.P_0))
 
 
 def plot_velocity_triangles(result: MeanlineResult) -> None:
