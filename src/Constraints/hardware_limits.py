@@ -1,6 +1,6 @@
 import math
 
-from design_models import BoundaryConditions, JsonObject
+from Helpers.design_models import BoundaryConditions, JsonObject
 
 
 def check_rotor_hardware_limits(

@@ -3,7 +3,7 @@
 Run the current single-stage meanline calculation without opening a plot:
 
 ```powershell
-python src/run_meanline.py --output runs/baseline.json
+python src/Runner/run_meanline.py --output runs/baseline.json
 ```
 
 The optional JSON configuration uses explicit unit-labelled keys; omitted keys retain the current meanline defaults.
@@ -24,7 +24,7 @@ The optional JSON configuration uses explicit unit-labelled keys; omitted keys r
 Run a configuration and write a record:
 
 ```powershell
-python src/run_meanline.py --config config/meanline.json --output runs/candidate.json
+python src/Runner/run_meanline.py --config config/meanline.json --output runs/candidate.json
 ```
 
 The JSON record stores a schema version, run ID, the full boundary-condition and meanline input snapshot, assumptions, warnings, convergence status, and unit-labelled results. `succeeded` means the meanline mass-flow residual is within `1e-6 kg/s`; the result also records this tolerance. `non_converged` contains the solver output, leaves `result.hardware_limits` null, and returns a nonzero process status. If the solver or hardware checks reject invalid values with `ValueError`, the runner writes a `failed` record and re-raises the error. Invalid JSON, unknown fields, and malformed values are rejected before solving.
@@ -34,7 +34,7 @@ For converged runs, `result.hardware_limits` reports the stage, measured value, 
 These runner checks apply to the current single-stage prototype. Direct calls to `solve_meanline` do not enforce them. Passing the checks does not certify other constraints, cooling, or overall design feasibility. The plotting entry point remains separate:
 
 ```powershell
-python src/main.py
+python src/Runner/main.py
 ```
 
 Run the verification suite with `python -m unittest discover -s tests -v`. The project dependencies are listed in [requirements.txt](./requirements.txt).

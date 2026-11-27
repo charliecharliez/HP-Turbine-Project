@@ -5,8 +5,8 @@ from pathlib import Path
 SRC_DIRECTORY = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIRECTORY))
 
-from boundary_conditions import boundary_conditions
-from design_models import (
+from Constraints.boundary_conditions import boundary_conditions
+from Helpers.design_models import (
     BoundaryConditions,
     CoolantState,
     DesignResult,

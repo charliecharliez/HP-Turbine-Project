@@ -4,13 +4,13 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 
-from Airfoil.airfoil import (ROTOR_DESIGN, STATOR_DESIGN, BladeRow, BladeRowDesign, print_blade_row, rotor_row,
+from Pipeline.Airfoil.airfoil import (ROTOR_DESIGN, STATOR_DESIGN, BladeRow, BladeRowDesign, print_blade_row, rotor_row,
                              stator_row)
-from boundary_conditions import boundary_conditions
-from Losses.losses_solver import (RowLoss, StageEfficiency, print_breakdown, rotor_losses, stage_efficiency,
+from Constraints.boundary_conditions import boundary_conditions
+from Pipeline.Losses.losses_solver import (RowLoss, StageEfficiency, print_breakdown, rotor_losses, stage_efficiency,
                                   stator_losses)
-from Meanline.solve_meanline import Inputs, MeanlineResult, StageInlet, solve_meanline
-from RadialEquilibrium.radial_equilibrium_solver import (FREE_VORTEX, SpanwiseFlow, print_spanwise_table,
+from Pipeline.Meanline.solve_meanline import Inputs, MeanlineResult, StageInlet, solve_meanline
+from Pipeline.RadialEquilibrium.radial_equilibrium_solver import (FREE_VORTEX, SpanwiseFlow, print_spanwise_table,
                                                          solve_radial_equilibrium)
 
 LOSS_TOLERANCE = 1e-6  # largest change of either kinetic loss coefficient between passes

@@ -10,8 +10,8 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import root_scalar
 
-from Meanline.gas_props import AirState, GAS
-from Meanline.solve_meanline import MeanlineResult
+from Pipeline.Meanline.gas_props import AirState, GAS
+from Pipeline.Meanline.solve_meanline import MeanlineResult
 
 Station = Literal[2, 3]  # 2: stator exit, 3: rotor exit
 Radius = float | np.ndarray  # m

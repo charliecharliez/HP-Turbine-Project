@@ -9,8 +9,8 @@ import numpy as np
 SRC_DIRECTORY = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIRECTORY))
 
-from boundary_conditions import boundary_conditions
-from Losses.losses_solver import (
+from Constraints.boundary_conditions import boundary_conditions
+from Pipeline.Losses.losses_solver import (
     AXIAL_INLET_PROFILE_LOSS,
     IMPULSE_PROFILE_LOSS,
     RowFlow,
@@ -26,8 +26,8 @@ from Losses.losses_solver import (
     tip_efficiency_debit,
     trailing_edge_loss,
 )
-from Meanline import gas_props
-from Meanline.gas_props import AirState
+from Pipeline.Meanline import gas_props
+from Pipeline.Meanline.gas_props import AirState
 
 
 class FoundationRepairTests(unittest.TestCase):

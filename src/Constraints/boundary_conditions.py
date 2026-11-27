@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from design_models import BoundaryConditions
+from Helpers.design_models import BoundaryConditions
 
 
 @dataclass(frozen=True)

@@ -10,12 +10,12 @@ from matplotlib.path import Path
 from scipy.optimize import brentq, minimize, minimize_scalar, root
 from scipy.spatial import KDTree
 
-from Airfoil.bezier import bezier_derivative, bezier_points
-from Airfoil.camberline import Camberline
-from Empirical.StaggerKO import beta_1_range, beta_2_range, get_stagger
-from Losses.losses_solver import AirfoilParams, RowKind, to_kacker_okapuu_angles, zweifel_pitch_chord
-from Meanline.gas_props import GAS
-from RadialEquilibrium.radial_equilibrium_solver import SpanwiseFlow
+from Pipeline.Airfoil.bezier import bezier_derivative, bezier_points
+from Pipeline.Airfoil.camberline import Camberline
+from Pipeline.Empirical.StaggerKO import beta_1_range, beta_2_range, get_stagger
+from Pipeline.Losses.losses_solver import AirfoilParams, RowKind, to_kacker_okapuu_angles, zweifel_pitch_chord
+from Pipeline.Meanline.gas_props import GAS
+from Pipeline.RadialEquilibrium.radial_equilibrium_solver import SpanwiseFlow
 
 __all__ = ["Airfoil", "AirfoilSide", "BladeRow", "BladeRowDesign", "BladeSection", "OffsetPoint",
            "ProfileShape", "SectionFlow", "TrailingEdgeCircle", "blade_row", "estimated_airfoil_params",

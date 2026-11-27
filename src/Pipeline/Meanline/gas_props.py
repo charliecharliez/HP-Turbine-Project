@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import math
 from CoolProp import CoolProp
 
-from boundary_conditions import boundary_conditions
+from Constraints.boundary_conditions import boundary_conditions
 
 # Inlet state (total) and isentropic exit state (static), from the setpoints
 T_IN = boundary_conditions.T_01  # K

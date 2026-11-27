@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from Airfoil.bezier import bezier_curve, bezier_derivative, bezier_points
+from Pipeline.Airfoil.bezier import bezier_curve, bezier_derivative, bezier_points
 
 __all__ = ["Camberline"]
 

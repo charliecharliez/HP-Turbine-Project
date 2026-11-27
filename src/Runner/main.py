@@ -1,6 +1,15 @@
-from Meanline.solve_meanline import Inputs, plot_velocity_triangles
-from stage_solver import StageDesign
-from turbine_solver import TurbineDesign, print_turbine_report, solve_turbine
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SRC_DIRECTORY = Path(__file__).resolve().parents[1]
+if str(SRC_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(SRC_DIRECTORY))
+
+from Pipeline.Meanline.solve_meanline import Inputs, plot_velocity_triangles
+from Helpers.stage_solver import StageDesign
+from Helpers.turbine_solver import TurbineDesign, print_turbine_report, solve_turbine
 
 SELECTED_DESIGN = TurbineDesign(stages=(
     StageDesign(inputs=Inputs(

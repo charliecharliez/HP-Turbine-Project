@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
 
-from Empirical.StaggerKO.serializer import JSON_PATH, read_digitized_curves, serialize_polynomials
+from Pipeline.Empirical.StaggerKO.serializer import JSON_PATH, read_digitized_curves, serialize_polynomials
 
 __all__ = ["beta_1_range", "beta_2_range", "get_stagger", "plot_stagger_chart"]
 

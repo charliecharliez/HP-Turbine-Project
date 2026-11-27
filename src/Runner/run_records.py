@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from design_models import JsonObject, RunRecord
+from Helpers.design_models import JsonObject, RunRecord
 
 
 def run_record_to_json(record: RunRecord) -> JsonObject:

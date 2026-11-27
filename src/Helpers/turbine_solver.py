@@ -7,10 +7,10 @@ from dataclasses import dataclass, field, replace
 from typing import TypeVar
 from scipy.optimize import brentq
 
-from boundary_conditions import boundary_conditions
-from Meanline.gas_props import AirState, GAS
-from Meanline.solve_meanline import MeanlineResult, StageInlet
-from stage_solver import Constraint, StageDesign, StageSolution, print_constraints, print_stage_report, solve_stage
+from Constraints.boundary_conditions import boundary_conditions
+from Pipeline.Meanline.gas_props import AirState, GAS
+from Pipeline.Meanline.solve_meanline import MeanlineResult, StageInlet
+from Helpers.stage_solver import Constraint, StageDesign, StageSolution, print_constraints, print_stage_report, solve_stage
 
 StageResult = TypeVar("StageResult")
 SHARE_TOLERANCE = 1e-9

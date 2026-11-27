@@ -8,13 +8,13 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from scipy.optimize import differential_evolution
 
-from Airfoil.airfoil import estimated_airfoil_params, stagger_chart_covers
-from Losses.losses_solver import StageEfficiency, rotor_losses, stage_efficiency, stator_losses
-from Meanline.solve_meanline import Inputs, MeanlineResult, solve_meanline
-from RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
-from stage_solver import (LOSS_TOLERANCE, MAX_PASSES, Constraint, StageDesign, inputs_with_losses, loss_change,
+from Pipeline.Airfoil.airfoil import estimated_airfoil_params, stagger_chart_covers
+from Pipeline.Losses.losses_solver import StageEfficiency, rotor_losses, stage_efficiency, stator_losses
+from Pipeline.Meanline.solve_meanline import Inputs, MeanlineResult, solve_meanline
+from Pipeline.RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
+from Helpers.stage_solver import (LOSS_TOLERANCE, MAX_PASSES, Constraint, StageDesign, inputs_with_losses, loss_change,
                           stage_constraints)
-from turbine_solver import (TurbineDesign, TurbinePerformance, TurbineSolution, rig_constraints,
+from Helpers.turbine_solver import (TurbineDesign, TurbinePerformance, TurbineSolution, rig_constraints,
                             solve_stages_in_sequence, solve_turbine, turbine_performance)
 
 MODEL_ERRORS = (ValueError, ArithmeticError)

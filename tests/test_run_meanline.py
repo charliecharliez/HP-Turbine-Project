@@ -10,11 +10,11 @@ from unittest.mock import patch
 SRC_DIRECTORY = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIRECTORY))
 
-from boundary_conditions import boundary_conditions
-from design_models import RunStatus
-from hardware_limits import check_rotor_hardware_limits
-from Meanline.solve_meanline import Inputs, solve_meanline
-from run_meanline import load_meanline_inputs, main, run_meanline
+from Constraints.boundary_conditions import boundary_conditions
+from Helpers.design_models import RunStatus
+from Constraints.hardware_limits import check_rotor_hardware_limits
+from Pipeline.Meanline.solve_meanline import Inputs, solve_meanline
+from Runner.run_meanline import load_meanline_inputs, main, run_meanline
 
 
 class HardwareLimitTests(unittest.TestCase):
@@ -147,7 +147,7 @@ class MeanlineRunTests(unittest.TestCase):
         result = replace(solve_meanline(Inputs()), residual=1.0)
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "nonconverged.json"
-            with patch("run_meanline.solve_meanline", return_value=result):
+            with patch("Runner.run_meanline.solve_meanline", return_value=result):
                 exit_code = main(["--output", str(output_path)])
             saved_record = json.loads(output_path.read_text(encoding="utf-8"))
 
@@ -158,7 +158,7 @@ class MeanlineRunTests(unittest.TestCase):
     def test_failed_solver_writes_failure_record_and_raises(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "failed-run.json"
-            with patch("run_meanline.solve_meanline", side_effect=ValueError("infeasible case")):
+            with patch("Runner.run_meanline.solve_meanline", side_effect=ValueError("infeasible case")):
                 with self.assertRaisesRegex(ValueError, "infeasible case"):
                     run_meanline(config_path=None, output_path=output_path)
             saved_record = json.loads(output_path.read_text(encoding="utf-8"))

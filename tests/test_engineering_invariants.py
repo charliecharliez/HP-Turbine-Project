@@ -8,9 +8,9 @@ import numpy as np
 SRC_DIRECTORY = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIRECTORY))
 
-from Meanline.gas_props import AirState, GAS
-from Meanline.solve_meanline import solve_meanline
-from RadialEquilibrium.radial_equilibrium_solver import (
+from Pipeline.Meanline.gas_props import AirState, GAS
+from Pipeline.Meanline.solve_meanline import solve_meanline
+from Pipeline.RadialEquilibrium.radial_equilibrium_solver import (
     Annulus,
     EXPONENTIAL,
     FIRST_POWER,
@@ -19,7 +19,7 @@ from RadialEquilibrium.radial_equilibrium_solver import (
     axial_velocity_constant,
     solve_radial_equilibrium,
 )
-from velocity_triangle import VelocityTriangle
+from Helpers.velocity_triangle import VelocityTriangle
 
 
 class EngineeringInvariantTests(unittest.TestCase):

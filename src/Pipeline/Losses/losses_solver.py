@@ -9,9 +9,9 @@ from typing import Literal
 
 import numpy as np
 
-from boundary_conditions import boundary_conditions
-from Meanline.gas_props import GAS
-from Meanline.solve_meanline import MeanlineResult
+from Constraints.boundary_conditions import boundary_conditions
+from Pipeline.Meanline.gas_props import GAS
+from Pipeline.Meanline.solve_meanline import MeanlineResult
 
 RowKind = Literal["stator", "rotor"]
 

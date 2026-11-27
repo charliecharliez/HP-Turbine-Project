@@ -7,8 +7,8 @@ from dataclasses import dataclass, replace
 import matplotlib.pyplot as plt
 from scipy.optimize import brentq, root_scalar
 
-from boundary_conditions import boundary_conditions
-from velocity_triangle import VelocityTriangle
+from Constraints.boundary_conditions import boundary_conditions
+from Helpers.velocity_triangle import VelocityTriangle
 
 from .gas_props import AirState, GAS
 

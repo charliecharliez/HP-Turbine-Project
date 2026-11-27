@@ -7,11 +7,11 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 
-from Airfoil.airfoil import estimated_airfoil_params, stagger_chart_covers
-from Losses.losses_solver import STATOR_INLET_FLOW_ANGLE, rotor_losses, stage_efficiency, stator_losses
-from Meanline.solve_meanline import Inputs, solve_meanline
-from RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
-from stage_solver import LOSS_TOLERANCE, MAX_PASSES, Constraint, StageDesign, StageSolution, solve_stage, stage_constraints
+from Pipeline.Airfoil.airfoil import estimated_airfoil_params, stagger_chart_covers
+from Pipeline.Losses.losses_solver import STATOR_INLET_FLOW_ANGLE, rotor_losses, stage_efficiency, stator_losses
+from Pipeline.Meanline.solve_meanline import Inputs, solve_meanline
+from Pipeline.RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
+from Helpers.stage_solver import LOSS_TOLERANCE, MAX_PASSES, Constraint, StageDesign, StageSolution, solve_stage, stage_constraints
 
 MODEL_ERRORS = (ValueError, ArithmeticError)
 RADIUS_RESOLUTION = 1e-4  # m, radii rounded down so the blade speed never exceeds its target

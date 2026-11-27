@@ -9,16 +9,16 @@ import numpy as np
 SRC_DIRECTORY = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIRECTORY))
 
-from Airfoil.airfoil import rotor_row, stator_row
-from boundary_conditions import boundary_conditions
-from design_optimizer import MODEL_FAILURE_PENALTY, DesignSpace, penalized_objective, screen_turbine
-from Losses.losses_solver import row_geometry, rotor_losses, stage_efficiency, stator_losses
-from main import SELECTED_DESIGN
-from Meanline.gas_props import AirState, GAS
-from Meanline.solve_meanline import Inputs, StageInlet, solve_meanline
-from RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
-from stage_solver import LOSS_TOLERANCE, StageDesign, solve_stage
-from turbine_solver import TurbineDesign, solve_turbine
+from Pipeline.Airfoil.airfoil import rotor_row, stator_row
+from Constraints.boundary_conditions import boundary_conditions
+from Helpers.design_optimizer import MODEL_FAILURE_PENALTY, DesignSpace, penalized_objective, screen_turbine
+from Pipeline.Losses.losses_solver import row_geometry, rotor_losses, stage_efficiency, stator_losses
+from Runner.main import SELECTED_DESIGN
+from Pipeline.Meanline.gas_props import AirState, GAS
+from Pipeline.Meanline.solve_meanline import Inputs, StageInlet, solve_meanline
+from Pipeline.RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
+from Helpers.stage_solver import LOSS_TOLERANCE, StageDesign, solve_stage
+from Helpers.turbine_solver import TurbineDesign, solve_turbine
 
 DOWNSTREAM_INLET = StageInlet(T_0=1500.0, P_0=8.0, m_dot=30.0, alpha=-30.0, mach=0.4)
 DOWNSTREAM_INPUTS = Inputs(pressure_ratio=2.0, alpha_2=68.0, beta_3=-58.0, N_shaft=10000)

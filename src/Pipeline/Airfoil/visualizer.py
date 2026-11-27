@@ -8,9 +8,9 @@ import numpy as np
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, callback, dcc, html, no_update
 
-from Airfoil.airfoil import Airfoil, AirfoilSide, OffsetPoint
-from Airfoil.bezier import bezier_points
-from Airfoil.camberline import Camberline
+from Pipeline.Airfoil.airfoil import Airfoil, AirfoilSide, OffsetPoint
+from Pipeline.Airfoil.bezier import bezier_points
+from Pipeline.Airfoil.camberline import Camberline
 
 NORMALISED_AXIAL_CHORD = 1.0
 SUCTION = "suction"

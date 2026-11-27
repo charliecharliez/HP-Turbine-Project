@@ -3,15 +3,20 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Sequence
 from uuid import uuid4
 
-from boundary_conditions import boundary_conditions
-from design_models import BAR_TO_PA, JsonObject, RunRecord, RunStatus
-from hardware_limits import check_rotor_hardware_limits
-from Meanline.solve_meanline import Inputs, MeanlineResult, solve_meanline
-from run_records import write_run_record
+SRC_DIRECTORY = Path(__file__).resolve().parents[1]
+if str(SRC_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(SRC_DIRECTORY))
+
+from Constraints.boundary_conditions import boundary_conditions
+from Helpers.design_models import BAR_TO_PA, JsonObject, RunRecord, RunStatus
+from Constraints.hardware_limits import check_rotor_hardware_limits
+from Pipeline.Meanline.solve_meanline import Inputs, MeanlineResult, solve_meanline
+from Runner.run_records import write_run_record
 
 MASS_FLOW_RESIDUAL_TOLERANCE_KG_S = 1e-6
 CONFIG_DEFAULTS = Inputs()
