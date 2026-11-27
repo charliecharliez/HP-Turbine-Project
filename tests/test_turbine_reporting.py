@@ -131,7 +131,7 @@ class TurbineReportingTests(unittest.TestCase):
             self.assertEqual(csv_path.name, "turbine_report.csv")
             self.assertEqual(json_path.name, "turbine_report.json")
             payload = json.loads(json_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(len(payload["stages"]), 2)
             self.assertEqual(
                 payload["velocity_sign_convention"]["axial_positive"],
@@ -172,6 +172,26 @@ class TurbineReportingTests(unittest.TestCase):
                 refreshed_rows = list(csv.DictReader(csv_file))
             self.assertEqual(len(refreshed_payload["stages"]), 2)
             self.assertEqual(len(refreshed_rows), 4)
+            self.assertEqual(refreshed_payload["schema_version"], 2)
+            self.assertEqual(refreshed_payload["stage_count"], 2)
+            self.assertAlmostEqual(
+                refreshed_payload["performance"]["power_w"],
+                self.solution.performance.power_w,
+            )
+            self.assertEqual(
+                refreshed_payload["expansion_shares"],
+                [0.5, 0.5],
+            )
+            self.assertIn("loading_coefficient", refreshed_payload["stages"][0])
+            self.assertIn("stator_row", refreshed_payload["stages"][0])
+            self.assertIn("rotor_row", refreshed_payload["stages"][0])
+            self.assertTrue(
+                all("satisfied" in constraint for constraint in refreshed_payload["constraints"])
+            )
+            self.assertIn(
+                "No validated total mass or axial-length model",
+                refreshed_payload["comparison_notes"]["weight_and_length"],
+            )
 
     def test_default_export_directory_is_repository_runs(self) -> None:
         self.assertEqual(RUNS_DIRECTORY, Path(__file__).resolve().parents[1] / "runs")
