@@ -1,6 +1,7 @@
 """Single-stage design loop: meanline, radial equilibrium, blade rows and losses iterated to consistent loss coefficients."""
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 
@@ -12,8 +13,12 @@ from Pipeline.Losses.losses_solver import (RowLoss, StageEfficiency, print_break
 from Pipeline.Meanline.solve_meanline import Inputs, MeanlineResult, StageInlet, solve_meanline
 from Pipeline.RadialEquilibrium.radial_equilibrium_solver import (FREE_VORTEX, SpanwiseFlow, print_spanwise_table,
                                                          solve_radial_equilibrium)
+from Helpers.design_space import ExitFlowLimits
 
 LOSS_TOLERANCE = 1e-6  # largest change of either kinetic loss coefficient between passes
+MASS_FLOW_TOLERANCE = 1e-8  # kg/s
+ENERGY_RELATIVE_TOLERANCE = 1e-9
+ENERGY_ABSOLUTE_TOLERANCE = 1e-6  # J/kg
 MAX_PASSES = 50
 
 
@@ -29,6 +34,11 @@ class StageDesign:
     vortex_exponent: float = FREE_VORTEX
     stator: BladeRowDesign = STATOR_DESIGN
     rotor: BladeRowDesign = ROTOR_DESIGN
+    exit_flow_limits: ExitFlowLimits = field(default_factory=ExitFlowLimits)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.exit_flow_limits, ExitFlowLimits):
+            raise ValueError("exit_flow_limits must be an ExitFlowLimits instance")
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,26 @@ class StageEvaluation:
     @property
     def loss_change(self) -> float:
         return loss_change(self.inputs, self.stator_loss, self.rotor_loss)
+
+    @property
+    def mass_flow_residual(self) -> float:
+        return self.meanline.residual
+
+    @property
+    def energy_residual(self) -> float:
+        return self.meanline.work_euler - self.meanline.work_thermo
+
+    @property
+    def balances_converged(self) -> bool:
+        return (
+            abs(self.mass_flow_residual) < MASS_FLOW_TOLERANCE
+            and math.isclose(
+                self.meanline.work_euler,
+                self.meanline.work_thermo,
+                rel_tol=ENERGY_RELATIVE_TOLERANCE,
+                abs_tol=ENERGY_ABSOLUTE_TOLERANCE,
+            )
+        )
 
     def inputs_with_predicted_losses(self) -> Inputs:
         return inputs_with_losses(self.inputs, self.stator_loss, self.rotor_loss)
@@ -87,7 +117,7 @@ class StageSolution:
 
     @property
     def converged(self) -> bool:
-        return self.final.loss_change < LOSS_TOLERANCE
+        return self.final.loss_change < LOSS_TOLERANCE and self.final.balances_converged
 
     @property
     def feasible(self) -> bool:
@@ -114,15 +144,34 @@ def evaluate_stage(inputs: Inputs, design: StageDesign) -> StageEvaluation:
 
 
 def stage_constraints(meanline: MeanlineResult, shaft_speed: float, hub_reaction: float,
-                      chart_warning_count: int) -> tuple[Constraint, ...]:
+                      chart_warning_count: int,
+                      exit_flow_limits: ExitFlowLimits = ExitFlowLimits()) -> tuple[Constraint, ...]:
     """Uncooled limits from the boundary conditions; blade speed is the larger rotor mean-radius value; shaft speed in rpm."""
-    return (
+    constraints = [
         Constraint("Rotor mean blade speed [m/s]", max(meanline.u_2, meanline.u_3),
                    boundary_conditions.max_mean_blade_speed),
         Constraint("Rotor exit AN^2 [m^2 rpm^2]", meanline.area_3 * shaft_speed**2, boundary_conditions.max_AN2),
         Constraint("Hub degree of reaction", hub_reaction, 0.0, is_upper_limit=False),
         Constraint("KO chart extrapolations", chart_warning_count, 0),
-    )
+    ]
+    if exit_flow_limits.max_absolute_exit_mach is not None:
+        constraints.append(
+            Constraint(
+                "Rotor exit absolute Mach",
+                meanline.M_3,
+                exit_flow_limits.max_absolute_exit_mach,
+            )
+        )
+    if exit_flow_limits.max_absolute_exit_swirl_m_s is not None:
+        exit_swirl_m_s = abs(meanline.v_3 * math.sin(math.radians(meanline.alpha_3)))
+        constraints.append(
+            Constraint(
+                "Rotor exit absolute swirl [m/s]",
+                exit_swirl_m_s,
+                exit_flow_limits.max_absolute_exit_swirl_m_s,
+            )
+        )
+    return tuple(constraints)
 
 
 def solve_stage(design: StageDesign = StageDesign()) -> StageSolution:
@@ -138,7 +187,8 @@ def solve_stage(design: StageDesign = StageDesign()) -> StageSolution:
         evaluations=tuple(evaluations),
         efficiency=stage_efficiency(final.meanline, final.rotor_loss),
         constraints=stage_constraints(final.meanline, final.inputs.N_shaft,
-                                      final.spanwise_flow.hub.degree_of_reaction, len(chart_warnings)),
+                                      final.spanwise_flow.hub.degree_of_reaction, len(chart_warnings),
+                                      design.exit_flow_limits),
     )
 
 
@@ -153,16 +203,16 @@ STAGE_SUMMARY_ROWS: tuple[tuple[str, Callable[[StageSolution], float], str], ...
     ("Stage loading", lambda solution: solution.final.meanline.stage_loading, ".3f"),
     ("Degree of reaction", lambda solution: solution.final.inputs.degree_of_reaction, ".3f"),
     ("Pressure ratio P_01/P_s3", lambda solution: solution.final.inputs.pressure_ratio, ".3f"),
-    ("alpha_1 [deg]", lambda solution: solution.final.meanline.alpha_1, ".2f"),
-    ("M_1", lambda solution: solution.final.meanline.M_1, ".3f"),
-    ("alpha_2 [deg]", lambda solution: solution.final.meanline.alpha_2, ".2f"),
-    ("beta_2 [deg]", lambda solution: solution.final.meanline.beta_2, ".2f"),
-    ("alpha_3 [deg]", lambda solution: solution.final.meanline.alpha_3, ".2f"),
-    ("beta_3 [deg]", lambda solution: solution.final.meanline.beta_3, ".2f"),
-    ("M_2", lambda solution: solution.final.meanline.M_2, ".3f"),
-    ("M_2rel", lambda solution: solution.final.meanline.M_2rel, ".3f"),
-    ("M_3", lambda solution: solution.final.meanline.M_3, ".3f"),
-    ("M_3rel", lambda solution: solution.final.meanline.M_3rel, ".3f"),
+    ("alpha_1 absolute [deg]", lambda solution: solution.final.meanline.alpha_1, ".2f"),
+    ("M_1 absolute", lambda solution: solution.final.meanline.M_1, ".3f"),
+    ("alpha_2 absolute [deg]", lambda solution: solution.final.meanline.alpha_2, ".2f"),
+    ("beta_2 rotor-relative [deg]", lambda solution: solution.final.meanline.beta_2, ".2f"),
+    ("alpha_3 absolute [deg]", lambda solution: solution.final.meanline.alpha_3, ".2f"),
+    ("beta_3 rotor-relative [deg]", lambda solution: solution.final.meanline.beta_3, ".2f"),
+    ("M_2 absolute", lambda solution: solution.final.meanline.M_2, ".3f"),
+    ("M_2rel rotor-relative", lambda solution: solution.final.meanline.M_2rel, ".3f"),
+    ("M_3 absolute", lambda solution: solution.final.meanline.M_3, ".3f"),
+    ("M_3rel rotor-relative", lambda solution: solution.final.meanline.M_3rel, ".3f"),
     ("Blade height 2 [mm]", lambda solution: solution.final.meanline.blade_height_2 * 1e3, ".2f"),
     ("Blade height 3 [mm]", lambda solution: solution.final.meanline.blade_height_3 * 1e3, ".2f"),
     ("Specific work [kJ/kg]", lambda solution: solution.efficiency.specific_work / 1e3, ".1f"),
@@ -175,12 +225,25 @@ STAGE_SUMMARY_ROWS: tuple[tuple[str, Callable[[StageSolution], float], str], ...
 def print_stage_report(solution: StageSolution) -> None:
     status = "converged" if solution.converged else "NOT converged"
     print(f"Single-stage loop {status} after {len(solution.evaluations)} passes "
-          f"(tolerance {LOSS_TOLERANCE:g} on the kinetic loss coefficients)")
+          f"(maximum {MAX_PASSES}; loss tolerance {LOSS_TOLERANCE:g}; "
+          f"mass-flow and energy balances checked)")
     print(f"{'Pass':>4}{'xi_stator used':>16}{'predicted':>12}{'xi_rotor used':>16}{'predicted':>12}{'change':>11}")
     for number, evaluation in enumerate(solution.evaluations, start=1):
         print(f"{number:>4}{evaluation.inputs.loss_kinetic_stator:>16.6f}{evaluation.stator_loss.kinetic_loss:>12.6f}"
               f"{evaluation.inputs.loss_kinetic_rotor:>16.6f}{evaluation.rotor_loss.kinetic_loss:>12.6f}"
               f"{evaluation.loss_change:>11.1e}")
+
+    final = solution.final
+    print("\nFinal coupled residuals")
+    print(f"  Mass-flow residual [kg/s] {final.mass_flow_residual:.3e} "
+          f"(limit {MASS_FLOW_TOLERANCE:.1e})")
+    print(f"  Euler-energy residual [J/kg] {final.energy_residual:.3e} "
+          f"(absolute limit {ENERGY_ABSOLUTE_TOLERANCE:.1e}; "
+          f"relative limit {ENERGY_RELATIVE_TOLERANCE:.1e})")
+    stator_loss_residual = abs(final.inputs.loss_kinetic_stator - final.stator_loss.kinetic_loss)
+    rotor_loss_residual = abs(final.inputs.loss_kinetic_rotor - final.rotor_loss.kinetic_loss)
+    print(f"  Stator loss-coefficient residual {stator_loss_residual:.3e}")
+    print(f"  Rotor loss-coefficient residual {rotor_loss_residual:.3e}")
 
     print("\nStage")
     for label, value_of, number_format in STAGE_SUMMARY_ROWS:

@@ -37,4 +37,6 @@ These runner checks apply to the current single-stage prototype. Direct calls to
 python src/Runner/main.py
 ```
 
+The turbine runner writes `runs/turbine_report.csv` and `runs/turbine_report.json` on each invocation, replacing the prior files. Both contain stage-qualified station 2 and 3 geometry and velocity data; the JSON nests stations under each stage, while the CSV has one row per station.
+
 Run the verification suite with `python -m unittest discover -s tests -v`. The project dependencies are listed in [requirements.txt](./requirements.txt).

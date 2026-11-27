@@ -8,9 +8,10 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 
 from Pipeline.Airfoil.airfoil import estimated_airfoil_params, stagger_chart_covers
-from Pipeline.Losses.losses_solver import STATOR_INLET_FLOW_ANGLE, rotor_losses, stage_efficiency, stator_losses
+from Pipeline.Losses.losses_solver import rotor_losses, stage_efficiency, stator_losses
 from Pipeline.Meanline.solve_meanline import Inputs, solve_meanline
 from Pipeline.RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
+from Helpers.design_space import VariableBounds
 from Helpers.stage_solver import LOSS_TOLERANCE, MAX_PASSES, Constraint, StageDesign, StageSolution, solve_stage, stage_constraints
 
 MODEL_ERRORS = (ValueError, ArithmeticError)
@@ -30,10 +31,33 @@ class SweepGrid:
 
     blade_speeds: tuple[float, ...] = (450.0, 475.0, 500.0)  # m/s, at the larger rotor mean radius
     shaft_speeds: tuple[float, ...] = (14000.0, 16000.0, 18000.0, 20000.0)  # rpm
-    radius_ratios: tuple[float, ...] = (1.0, 1.1, 1.2)  # radius_3 / radius_2
+    radius_ratios: tuple[float, ...] = (1.0, 1.075, 1.15)  # radius_3 / radius_2
     reactions: tuple[float, ...] = (0.2, 0.3, 0.4, 0.5)
     stator_exit_angles: tuple[float, ...] = (66.0, 69.0, 72.0, 75.0, 78.0)  # deg
     rotor_exit_angles: tuple[float, ...] = (-55.0, -59.0, -63.0, -67.0, -71.0)  # deg
+    bounds: VariableBounds = field(default_factory=VariableBounds)
+
+    def __post_init__(self) -> None:
+        variable_ranges = (
+            ("blade_speeds", self.blade_speeds, self.bounds.blade_speed),
+            ("shaft_speeds", self.shaft_speeds, self.bounds.shaft_speed),
+            ("radius_ratios", self.radius_ratios, self.bounds.radius_ratio),
+            ("reactions", self.reactions, self.bounds.reaction),
+            ("stator_exit_angles", self.stator_exit_angles, self.bounds.stator_exit_angle),
+            ("rotor_exit_angles", self.rotor_exit_angles, self.bounds.rotor_exit_angle),
+        )
+        for name, values, (lower, upper) in variable_ranges:
+            if not values:
+                raise ValueError(f"{name} must contain at least one candidate value")
+            for value in values:
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError(f"{name} values must be finite numbers")
+                if not lower <= value <= upper:
+                    raise ValueError(f"{name} value {value} is outside [{lower}, {upper}]")
 
     def designs(self, base: StageDesign) -> Iterator[StageDesign]:
         combinations = itertools.product(self.blade_speeds, self.shaft_speeds, self.radius_ratios, self.reactions,
@@ -46,19 +70,23 @@ class SweepGrid:
             yield replace(base, inputs=inputs)
 
     @classmethod
-    def around(cls, inputs: Inputs) -> SweepGrid:
+    def around(cls, inputs: Inputs, bounds: VariableBounds = VariableBounds()) -> SweepGrid:
         """Grid of one step either side of a design, with the blade speed held at or below its limit."""
         omega = inputs.N_shaft * 2 * math.pi / 60
         blade_speed = omega * max(inputs.radius_2, inputs.radius_3)
         radius_ratio = inputs.radius_3 / inputs.radius_2
         return cls(
-            blade_speeds=(blade_speed - REFINEMENT_STEPS["blade_speed"], blade_speed),
-            shaft_speeds=either_side(inputs.N_shaft, REFINEMENT_STEPS["shaft_speed"]),
-            radius_ratios=tuple(ratio for ratio in either_side(radius_ratio, REFINEMENT_STEPS["radius_ratio"])
-                                if ratio >= 1.0),
-            reactions=either_side(inputs.degree_of_reaction, REFINEMENT_STEPS["reaction"]),
-            stator_exit_angles=either_side(inputs.alpha_2, REFINEMENT_STEPS["angle"]),
-            rotor_exit_angles=either_side(inputs.beta_3, REFINEMENT_STEPS["angle"]),
+            blade_speeds=bounded_neighbors(blade_speed, REFINEMENT_STEPS["blade_speed"], bounds.blade_speed),
+            shaft_speeds=bounded_neighbors(inputs.N_shaft, REFINEMENT_STEPS["shaft_speed"], bounds.shaft_speed),
+            radius_ratios=bounded_neighbors(radius_ratio, REFINEMENT_STEPS["radius_ratio"], bounds.radius_ratio),
+            reactions=bounded_neighbors(inputs.degree_of_reaction, REFINEMENT_STEPS["reaction"], bounds.reaction),
+            stator_exit_angles=bounded_neighbors(
+                inputs.alpha_2, REFINEMENT_STEPS["angle"], bounds.stator_exit_angle
+            ),
+            rotor_exit_angles=bounded_neighbors(
+                inputs.beta_3, REFINEMENT_STEPS["angle"], bounds.rotor_exit_angle
+            ),
+            bounds=bounds,
         )
 
 
@@ -66,8 +94,9 @@ def round_down(value: float, resolution: float) -> float:
     return math.floor(value / resolution + 1e-9) * resolution
 
 
-def either_side(center: float, step: float) -> tuple[float, ...]:
-    return (center - step, center, center + step)
+def bounded_neighbors(center: float, step: float, bounds: tuple[float, float]) -> tuple[float, ...]:
+    lower, upper = bounds
+    return tuple(sorted({max(lower, min(upper, value)) for value in (center - step, center, center + step)}))
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +135,7 @@ def screen_design(design: StageDesign) -> ScreenedDesign:
     try:
         for _ in range(MAX_PASSES):
             meanline = solve_meanline(inputs, design.inlet)
-            stator_params = estimated_airfoil_params(design.stator, STATOR_INLET_FLOW_ANGLE, meanline.alpha_2)
+            stator_params = estimated_airfoil_params(design.stator, meanline.alpha_1, meanline.alpha_2)
             rotor_params = estimated_airfoil_params(design.rotor, meanline.beta_2, meanline.beta_3)
             stator_loss = stator_losses(meanline, stator_params)
             rotor_loss = rotor_losses(meanline, rotor_params)
@@ -124,7 +153,7 @@ def screen_design(design: StageDesign) -> ScreenedDesign:
         return ScreenedDesign(design, error=f"{type(error).__name__}: {error}")
 
     for span in (hub, tip):
-        stator_covered = stagger_chart_covers(STATOR_INLET_FLOW_ANGLE, span.stator_exit.absolute_angle)
+        stator_covered = stagger_chart_covers(meanline.alpha_1, span.stator_exit.absolute_angle)
         rotor_covered = stagger_chart_covers(span.stator_exit.relative_angle, span.rotor_exit.relative_angle)
         if not (stator_covered and rotor_covered):
             return ScreenedDesign(design, error=f"Stagger chart: span fraction {span.span_fraction:g} outside KO Fig. 5")
@@ -134,7 +163,13 @@ def screen_design(design: StageDesign) -> ScreenedDesign:
     return ScreenedDesign(
         design=replace(design, inputs=inputs),
         total_to_static=stage_efficiency(meanline, rotor_loss).total_to_static,
-        constraints=stage_constraints(meanline, inputs.N_shaft, hub_reaction, chart_warning_count),
+        constraints=stage_constraints(
+            meanline,
+            inputs.N_shaft,
+            hub_reaction,
+            chart_warning_count,
+            design.exit_flow_limits,
+        ),
     )
 
 
@@ -159,14 +194,21 @@ def design_key(inputs: Inputs) -> tuple[float, ...]:
             round(inputs.alpha_2, 6), round(inputs.beta_3, 6))
 
 
-def refine_sweep(result: SweepResult, base: StageDesign) -> list[SweepResult]:
+def refine_sweep(
+    result: SweepResult,
+    base: StageDesign,
+    bounds: VariableBounds = VariableBounds(),
+) -> list[SweepResult]:
     """Sweep one step around the selected design while that raises eta_ts by at least MIN_IMPROVEMENT."""
     sweeps = [result]
     for _ in range(MAX_REFINEMENTS):
         selected = sweeps[-1].selected
         if selected is None:
             break
-        refined = run_sweep(SweepGrid.around(selected.final.inputs), replace(base, inputs=selected.final.inputs))
+        refined = run_sweep(
+            SweepGrid.around(selected.final.inputs, bounds),
+            replace(base, inputs=selected.final.inputs),
+        )
         if refined.selected is None or design_key(refined.selected.final.inputs) == design_key(selected.final.inputs):
             break
         gain = refined.selected.efficiency.total_to_static - selected.efficiency.total_to_static

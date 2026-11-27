@@ -12,6 +12,7 @@ from Pipeline.Airfoil.airfoil import estimated_airfoil_params, stagger_chart_cov
 from Pipeline.Losses.losses_solver import StageEfficiency, rotor_losses, stage_efficiency, stator_losses
 from Pipeline.Meanline.solve_meanline import Inputs, MeanlineResult, solve_meanline
 from Pipeline.RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
+from Helpers.design_space import ExitFlowLimits, VariableBounds
 from Helpers.stage_solver import (LOSS_TOLERANCE, MAX_PASSES, Constraint, StageDesign, inputs_with_losses, loss_change,
                           stage_constraints)
 from Helpers.turbine_solver import (TurbineDesign, TurbinePerformance, TurbineSolution, rig_constraints,
@@ -33,20 +34,6 @@ CANDIDATES_TO_VERIFY = 6
 FIRST_GUESS = Inputs(loss_kinetic_stator=0.08, loss_kinetic_rotor=0.10)
 
 
-# ---------------------------------------------------------------------------
-# Design space
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True)
-class VariableBounds:
-    shaft_speed: tuple[float, float] = (8000.0, 20000.0)  # rpm
-    blade_speed: tuple[float, float] = (350.0, 500.0)  # m/s, first rotor at its larger mean radius
-    radius_ratio: tuple[float, float] = (1.0, 1.15)  # radius_3 / radius_2 of each stage
-    reaction: tuple[float, float] = (0.0, 0.6)
-    stator_exit_angle: tuple[float, float] = (52.0, 78.0)  # deg
-    rotor_exit_angle: tuple[float, float] = (-78.0, -52.0)  # deg
-    expansion_share: tuple[float, float] = (0.3, 0.7)  # of every stage but the last, which takes the rest
-
-
 @dataclass(frozen=True)
 class DesignSpace:
     """Maps a vector of design variables to a turbine whose mean line runs on from stage to stage."""
@@ -54,21 +41,66 @@ class DesignSpace:
     stage_count: int
     bounds: VariableBounds = field(default_factory=VariableBounds)
     base_stage: StageDesign = field(default_factory=lambda: StageDesign(inputs=FIRST_GUESS))
+    exit_flow_limits: ExitFlowLimits | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.bounds, VariableBounds):
+            raise ValueError("bounds must be a VariableBounds instance")
+        if self.exit_flow_limits is not None and not isinstance(self.exit_flow_limits, ExitFlowLimits):
+            raise ValueError("exit_flow_limits must be None or an ExitFlowLimits instance")
+        if (
+            isinstance(self.stage_count, bool)
+            or not isinstance(self.stage_count, int)
+            or self.stage_count not in (1, 2)
+        ):
+            raise ValueError(f"stage_count must be 1 or 2, got {self.stage_count!r}")
+        if self.stage_count == 2:
+            lower, upper = self.bounds.expansion_share
+            feasible_lower = max(lower, 1.0 - upper)
+            feasible_upper = min(upper, 1.0 - lower)
+            if feasible_lower >= feasible_upper:
+                raise ValueError("expansion_share bounds cannot produce a valid two-stage split")
 
     def scipy_bounds(self) -> list[tuple[float, float]]:
         bounds = self.bounds
         per_stage = [bounds.radius_ratio, bounds.reaction, bounds.stator_exit_angle, bounds.rotor_exit_angle]
-        shares = [bounds.expansion_share] * (self.stage_count - 1)
+        share_bounds = bounds.expansion_share
+        if self.stage_count == 2:
+            lower, upper = share_bounds
+            share_bounds = (max(lower, 1.0 - upper), min(upper, 1.0 - lower))
+        shares = [share_bounds] * (self.stage_count - 1)
         return [bounds.shaft_speed, bounds.blade_speed, *per_stage * self.stage_count, *shares]
 
     def decode(self, variables: Sequence[float]) -> TurbineDesign:
-        """Turbine from a variable vector at practical resolution; raises ValueError if no share is left for the last stage."""
-        shaft_speed = round(float(variables[0]), SHAFT_SPEED_DECIMALS)
-        blade_speed = float(variables[1])
-        stage_variables = np.reshape(variables[2:2 + VARIABLES_PER_STAGE * self.stage_count],
-                                     (self.stage_count, VARIABLES_PER_STAGE))
-        leading_shares = [round(float(share), SHARE_DECIMALS)
-                          for share in variables[2 + VARIABLES_PER_STAGE * self.stage_count:]]
+        """Build a turbine from an in-range variable vector at practical resolution."""
+        expected_length = 2 + VARIABLES_PER_STAGE * self.stage_count + self.stage_count - 1
+        if len(variables) != expected_length:
+            raise ValueError(f"expected {expected_length} design variables, got {len(variables)}")
+        candidate_bounds = self.scipy_bounds()
+        values = []
+        for index, value in enumerate(variables):
+            if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+                raise ValueError(f"design variable {index} must be a finite number")
+            numeric_value = float(value)
+            if not math.isfinite(numeric_value):
+                raise ValueError(f"design variable {index} must be a finite number")
+            lower, upper = candidate_bounds[index]
+            if not lower <= numeric_value <= upper:
+                raise ValueError(
+                    f"design variable {index} must be within [{lower}, {upper}], got {numeric_value}"
+                )
+            values.append(numeric_value)
+
+        shaft_speed = round(values[0], SHAFT_SPEED_DECIMALS)
+        blade_speed = values[1]
+        stage_variables = np.reshape(
+            values[2 : 2 + VARIABLES_PER_STAGE * self.stage_count],
+            (self.stage_count, VARIABLES_PER_STAGE),
+        )
+        leading_shares = [
+            round(share, SHARE_DECIMALS)
+            for share in values[2 + VARIABLES_PER_STAGE * self.stage_count :]
+        ]
         omega = shaft_speed * 2 * math.pi / 60
 
         stages = []
@@ -84,9 +116,17 @@ class DesignSpace:
                              degree_of_reaction=round(float(reaction), REACTION_DECIMALS),
                              alpha_2=round(float(alpha_2), ANGLE_DECIMALS),
                              beta_3=round(float(beta_3), ANGLE_DECIMALS))
-            stages.append(replace(self.base_stage, inputs=inputs))
+            stage = replace(self.base_stage, inputs=inputs)
+            if self.exit_flow_limits is not None:
+                stage = replace(stage, exit_flow_limits=self.exit_flow_limits)
+            stages.append(stage)
 
         shares = (*leading_shares, round(1.0 - math.fsum(leading_shares), SHARE_DECIMALS))
+        if self.stage_count == 2 and any(
+            not self.bounds.expansion_share[0] <= share <= self.bounds.expansion_share[1]
+            for share in shares
+        ):
+            raise ValueError(f"decoded expansion shares are outside their bounds: {shares}")
         return TurbineDesign(stages=tuple(stages), expansion_shares=shares)
 
 
@@ -161,7 +201,7 @@ def screen_stage(design: StageDesign) -> ScreenedStage:
         meanline=meanline,
         efficiency=stage_efficiency(meanline, rotor_loss),
         constraints=stage_constraints(meanline, inputs.N_shaft, spanwise_flow.hub.degree_of_reaction,
-                                      chart_warning_count),
+                                      chart_warning_count, design.exit_flow_limits),
     )
 
 

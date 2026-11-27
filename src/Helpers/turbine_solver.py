@@ -11,6 +11,7 @@ from Constraints.boundary_conditions import boundary_conditions
 from Pipeline.Meanline.gas_props import AirState, GAS
 from Pipeline.Meanline.solve_meanline import MeanlineResult, StageInlet
 from Helpers.stage_solver import Constraint, StageDesign, StageSolution, print_constraints, print_stage_report, solve_stage
+from Helpers.turbine_reporting import build_stage_reports, print_stage_station_report
 
 StageResult = TypeVar("StageResult")
 SHARE_TOLERANCE = 1e-9
@@ -29,10 +30,25 @@ class TurbineDesign:
     pressure_ratio: float = boundary_conditions.pressure_ratio_TS  # P_01 / P_s3 of the whole turbine
 
     def __post_init__(self) -> None:
+        if len(self.stages) not in (1, 2):
+            raise ValueError(f"Turbine design must contain one or two stages, got {len(self.stages)}")
         if len(self.expansion_shares) != len(self.stages):
             raise ValueError(f"{len(self.stages)} stages need as many expansion shares, "
                              f"got {len(self.expansion_shares)}")
-        if min(self.expansion_shares) <= 0 or abs(sum(self.expansion_shares) - 1) > SHARE_TOLERANCE:
+        if any(
+            isinstance(share, bool)
+            or not isinstance(share, (int, float))
+            or not math.isfinite(share)
+            or share <= 0
+            for share in self.expansion_shares
+        ):
+            raise ValueError(f"Expansion shares must be finite and positive, got {self.expansion_shares}")
+        if not math.isclose(
+            math.fsum(self.expansion_shares),
+            1.0,
+            rel_tol=0.0,
+            abs_tol=SHARE_TOLERANCE,
+        ):
             raise ValueError(f"Expansion shares must be positive and sum to 1, got {self.expansion_shares}")
         shaft_speeds = {stage.inputs.N_shaft for stage in self.stages}
         if len(shaft_speeds) > 1:
@@ -71,6 +87,9 @@ class TurbineDesign:
 @dataclass(frozen=True)
 class TurbinePerformance:
     specific_work: float  # J/kg, every stage's work after its tip-clearance debit
+    power_w: float
+    exit_kinetic_energy_j_kg: float
+    exit_swirl_kinetic_energy_j_kg: float
     total_to_total: float
     total_to_static: float
     work_shares: tuple[float, ...]  # each stage's fraction of the specific work
@@ -137,9 +156,10 @@ def solve_stages_in_sequence(design: TurbineDesign, solve: Callable[[StageDesign
 
 def turbine_performance(inlet: StageInlet, meanlines: Sequence[MeanlineResult],
                         stage_work: Sequence[float]) -> TurbinePerformance:
-    """Overall efficiencies from the turbine inlet to the last stage's exit; stage work in J/kg."""
+    """Overall uncooled performance from the turbine inlet to the last stage's exit."""
     exit_state = meanlines[-1]
     specific_work = math.fsum(stage_work)
+    exit_swirl_velocity = exit_state.v_3 * math.sin(math.radians(exit_state.alpha_3))
     inlet_state = AirState.from_temperature_pressure(inlet.T_0, inlet.P_0 * 1e5)
     ideal_static = AirState.isentropic_from_temperature_pressure(
         inlet.T_0,
@@ -155,6 +175,9 @@ def turbine_performance(inlet: StageInlet, meanlines: Sequence[MeanlineResult],
     ideal_work_total = inlet_state.enthalpy_j_kg - ideal_total.enthalpy_j_kg
     return TurbinePerformance(
         specific_work=specific_work,
+        power_w=specific_work * inlet.m_dot,
+        exit_kinetic_energy_j_kg=0.5 * exit_state.v_3**2,
+        exit_swirl_kinetic_energy_j_kg=0.5 * exit_swirl_velocity**2,
         total_to_total=specific_work / ideal_work_total,
         total_to_static=specific_work / ideal_work_static,
         work_shares=tuple(work / specific_work for work in stage_work),
@@ -173,9 +196,11 @@ def solve_turbine(design: TurbineDesign = TurbineDesign()) -> TurbineSolution:
 # ---------------------------------------------------------------------------
 def print_turbine_report(solution: TurbineSolution) -> None:
     stage_count = len(solution.stages)
+    stage_reports = build_stage_reports(solution.stages)
     for number, stage in enumerate(solution.stages, start=1):
         print(f"{'=' * 30} Stage {number} of {stage_count} {'=' * 30}")
         print_stage_report(stage)
+        print_stage_station_report(stage_reports[number - 1])
         print()
 
     performance = solution.performance
@@ -186,7 +211,10 @@ def print_turbine_report(solution: TurbineSolution) -> None:
     print(f"  {'Expansion shares (design)':<36}{expansion:>12}")
     print(f"  {'Work shares (result)':<36}{shares:>12}")
     print(f"  {'Specific work [kJ/kg]':<36}{performance.specific_work / 1e3:>12.1f}")
-    print(f"  {'Power [MW]':<36}{performance.specific_work * solution.design.inlet.m_dot / 1e6:>12.2f}")
+    print(f"  {'Power [MW]':<36}{performance.power_w / 1e6:>12.2f}")
+    print(f"  {'Exit kinetic energy [kJ/kg]':<36}{performance.exit_kinetic_energy_j_kg / 1e3:>12.1f}")
+    print(f"  {'Exit swirl kinetic energy [kJ/kg]':<36}"
+          f"{performance.exit_swirl_kinetic_energy_j_kg / 1e3:>12.1f}")
     print(f"  {'eta_tt':<36}{performance.total_to_total:>12.4f}")
     print(f"  {'eta_ts':<36}{performance.total_to_static:>12.4f}")
     print()

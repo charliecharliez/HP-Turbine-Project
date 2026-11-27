@@ -271,11 +271,14 @@ def solve_meanline(inputs: Inputs = Inputs(), inlet: StageInlet = StageInlet()) 
     return replace(states, M_1=subsonic_mach_number(inlet.m_dot, stator_exit_area, inlet.T_0, inlet.P_0))
 
 
-def plot_velocity_triangles(result: MeanlineResult) -> None:
+def plot_velocity_triangles(result: MeanlineResult, stage_label: str | None = None) -> None:
     """Velocity triangles at stations 2 (solid) and 3 (dashed) from a common apex."""
     station_2 = VelocityTriangle.from_U_C_W(result.u_2, result.v_2, result.w_2, station=2)
     station_3 = VelocityTriangle.from_U_C_W(result.u_3, result.v_3, result.w_3, station=3)
+    title = "Meanline velocity triangles: station 2 (rotor inlet) and station 3 (rotor exit)"
+    if stage_label is not None:
+        title = f"{stage_label}: {title}"
     VelocityTriangle.plot_combined(
         station_2, station_3,
-        title="Meanline velocity triangles: station 2 (rotor inlet) and station 3 (rotor exit)")
+        title=title)
     plt.show()

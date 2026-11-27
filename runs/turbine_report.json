@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "stages": [
+    {
+      "stage_index": 1,
+      "stations": [
+        {
+          "absolute_velocity": {
+            "axial_velocity_m_s": 316.18591417405764,
+            "flow_angle_deg": 70.0,
+            "mach": 1.2295988897865067,
+            "speed_m_s": 924.4657671316977,
+            "tangential_velocity_m_s": 868.7136595428402
+          },
+          "annulus": {
+            "area_m2": 0.054670666281174465,
+            "blade_height_m": 0.02331486275663538,
+            "hub_diameter_m": 0.7230851372433645,
+            "hub_radius_m": 0.36154256862168227,
+            "tip_diameter_m": 0.7697148627566354,
+            "tip_radius_m": 0.3848574313783177
+          },
+          "blade_speed_m_s": 499.8512672903033,
+          "location": "stator_exit_rotor_inlet",
+          "relative_velocity": {
+            "axial_velocity_m_s": 316.18591417405764,
+            "flow_angle_deg": 49.39708022992263,
+            "mach": 0.6461881486538542,
+            "speed_m_s": 485.83227223018946,
+            "tangential_velocity_m_s": 368.8623922525369
+          },
+          "static_pressure_pa": 749860.223927586,
+          "static_temperature_k": 1502.654717131128,
+          "station_id": "(1, 2)",
+          "station_index": 2
+        },
+        {
+          "absolute_velocity": {
+            "axial_velocity_m_s": 247.9761859951504,
+            "flow_angle_deg": -36.174810439414266,
+            "mach": 0.4252263597152617,
+            "speed_m_s": 307.19781503688444,
+            "tangential_velocity_m_s": -181.3237677270535
+          },
+          "annulus": {
+            "area_m2": 0.09855400742830574,
+            "blade_height_m": 0.04201810191194811,
+            "hub_diameter_m": 0.7045818980880519,
+            "hub_radius_m": 0.35229094904402597,
+            "tip_diameter_m": 0.7886181019119481,
+            "tip_radius_m": 0.39430905095597407
+          },
+          "blade_speed_m_s": 499.98520385710145,
+          "location": "rotor_exit",
+          "relative_velocity": {
+            "axial_velocity_m_s": 247.9761859951504,
+            "flow_angle_deg": -70.0,
+            "mach": 1.0035992948548647,
+            "speed_m_s": 725.0338637482806,
+            "tangential_velocity_m_s": -681.308971584155
+          },
+          "static_pressure_pa": 487804.87804878055,
+          "static_temperature_k": 1382.7249372054403,
+          "station_id": "(1, 3)",
+          "station_index": 3
+        }
+      ]
+    }
+  ],
+  "velocity_sign_convention": {
+    "absolute_frame": "C",
+    "axial_positive": "downstream",
+    "relative_frame": "W",
+    "tangential_positive": "shaft_rotation"
+  }
+}

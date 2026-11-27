@@ -2,7 +2,9 @@ import math
 import sys
 import unittest
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -12,13 +14,26 @@ sys.path.insert(0, str(SRC_DIRECTORY))
 from Pipeline.Airfoil.airfoil import rotor_row, stator_row
 from Constraints.boundary_conditions import boundary_conditions
 from Helpers.design_optimizer import MODEL_FAILURE_PENALTY, DesignSpace, penalized_objective, screen_turbine
+from Helpers.design_space import ExitFlowLimits, VariableBounds
+from Helpers.design_sweep import SweepGrid
 from Pipeline.Losses.losses_solver import row_geometry, rotor_losses, stage_efficiency, stator_losses
 from Runner.main import SELECTED_DESIGN
 from Pipeline.Meanline.gas_props import AirState, GAS
 from Pipeline.Meanline.solve_meanline import Inputs, StageInlet, solve_meanline
 from Pipeline.RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
-from Helpers.stage_solver import LOSS_TOLERANCE, StageDesign, solve_stage
-from Helpers.turbine_solver import TurbineDesign, solve_turbine
+from Helpers.stage_solver import (
+    ENERGY_ABSOLUTE_TOLERANCE,
+    ENERGY_RELATIVE_TOLERANCE,
+    LOSS_TOLERANCE,
+    MASS_FLOW_TOLERANCE,
+    MAX_PASSES,
+    StageDesign,
+    evaluate_stage,
+    print_stage_report,
+    solve_stage,
+    stage_constraints,
+)
+from Helpers.turbine_solver import TurbineDesign, print_turbine_report, solve_turbine
 
 DOWNSTREAM_INLET = StageInlet(T_0=1500.0, P_0=8.0, m_dot=30.0, alpha=-30.0, mach=0.4)
 DOWNSTREAM_INPUTS = Inputs(pressure_ratio=2.0, alpha_2=68.0, beta_3=-58.0, N_shaft=10000)
@@ -39,6 +54,30 @@ class MeanlineTests(unittest.TestCase):
 
         self.assertLess(abs(meanline.residual), 1e-9)
         self.assertAlmostEqual(meanline.work_euler, meanline.work_thermo, delta=1e-6 * meanline.work_thermo)
+
+    def test_kinetic_loss_inputs_match_stator_and_rotor_states(self) -> None:
+        inputs = Inputs(loss_kinetic_stator=0.12, loss_kinetic_rotor=0.16)
+        meanline = solve_meanline(inputs)
+        stator_isentropic_drop = (
+            meanline.inlet_air_state.enthalpy_j_kg
+            - meanline.stator_isentropic_air_state.enthalpy_j_kg
+        )
+        rotor_relative_inlet_enthalpy = meanline.stator_exit_air_state.enthalpy_j_kg + (
+            meanline.w_2**2 + meanline.u_3**2 - meanline.u_2**2
+        ) / 2
+        rotor_isentropic_drop = (
+            rotor_relative_inlet_enthalpy
+            - meanline.rotor_isentropic_air_state.enthalpy_j_kg
+        )
+
+        self.assertAlmostEqual(
+            1 - meanline.v_2**2 / (2 * stator_isentropic_drop),
+            inputs.loss_kinetic_stator,
+        )
+        self.assertAlmostEqual(
+            1 - meanline.w_3**2 / (2 * rotor_isentropic_drop),
+            inputs.loss_kinetic_rotor,
+        )
 
     def test_stator_total_temperature_and_mass_flow_close(self) -> None:
         cases = (
@@ -112,28 +151,41 @@ class MeanlineTests(unittest.TestCase):
         self.assertAlmostEqual(meanline.P_03, expected_exit_total_pressure, places=12)
 
     def test_signed_angles_and_mach_numbers(self) -> None:
-        inputs = Inputs()
-        meanline = solve_meanline(inputs)
-        speed_of_sound_3 = math.sqrt(
-            meanline.rotor_exit_air_state.gamma
-            * meanline.rotor_exit_air_state.gas_constant_j_kg_k
-            * meanline.T_3
+        cases = (
+            (Inputs(), StageInlet()),
+            (DOWNSTREAM_INPUTS, DOWNSTREAM_INLET),
         )
-        c_x_2 = meanline.v_2 * math.cos(math.radians(meanline.alpha_2))
-        c_theta_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
-        c_x_3 = meanline.w_3 * math.cos(math.radians(meanline.beta_3))
-        c_theta_3 = meanline.u_3 + meanline.w_3 * math.sin(math.radians(meanline.beta_3))
+        for inputs, inlet in cases:
+            meanline = solve_meanline(inputs, inlet)
+            speed_of_sound_2 = math.sqrt(
+                meanline.stator_exit_air_state.gamma
+                * meanline.stator_exit_air_state.gas_constant_j_kg_k
+                * meanline.T_2
+            )
+            speed_of_sound_3 = math.sqrt(
+                meanline.rotor_exit_air_state.gamma
+                * meanline.rotor_exit_air_state.gas_constant_j_kg_k
+                * meanline.T_3
+            )
+            c_x_2 = meanline.v_2 * math.cos(math.radians(meanline.alpha_2))
+            c_theta_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
+            c_x_3 = meanline.w_3 * math.cos(math.radians(meanline.beta_3))
+            c_theta_3 = meanline.u_3 + meanline.w_3 * math.sin(math.radians(meanline.beta_3))
 
-        self.assertEqual(meanline.beta_3, inputs.beta_3)
-        self.assertAlmostEqual(
-            meanline.beta_2,
-            math.degrees(math.atan2(c_theta_2 - meanline.u_2, c_x_2)),
-        )
-        self.assertAlmostEqual(
-            meanline.alpha_3,
-            math.degrees(math.atan2(c_theta_3, c_x_3)),
-        )
-        self.assertAlmostEqual(meanline.M_3rel, meanline.w_3 / speed_of_sound_3)
+            with self.subTest(inputs=inputs):
+                self.assertEqual(meanline.beta_3, inputs.beta_3)
+                self.assertAlmostEqual(
+                    meanline.beta_2,
+                    math.degrees(math.atan2(c_theta_2 - meanline.u_2, c_x_2)),
+                )
+                self.assertAlmostEqual(
+                    meanline.alpha_3,
+                    math.degrees(math.atan2(c_theta_3, c_x_3)),
+                )
+                self.assertAlmostEqual(meanline.M_2, meanline.v_2 / speed_of_sound_2)
+                self.assertAlmostEqual(meanline.M_2rel, meanline.w_2 / speed_of_sound_2)
+                self.assertAlmostEqual(meanline.M_3, meanline.v_3 / speed_of_sound_3)
+                self.assertAlmostEqual(meanline.M_3rel, meanline.w_3 / speed_of_sound_3)
 
 
 class InterfaceTests(unittest.TestCase):
@@ -190,10 +242,72 @@ class StageLoopTests(unittest.TestCase):
         final = solution.final
 
         self.assertTrue(solution.converged)
+        self.assertTrue(final.balances_converged)
+        self.assertLess(abs(final.mass_flow_residual), MASS_FLOW_TOLERANCE)
+        self.assertTrue(
+            math.isclose(
+                final.meanline.work_euler,
+                final.meanline.work_thermo,
+                rel_tol=ENERGY_RELATIVE_TOLERANCE,
+                abs_tol=ENERGY_ABSOLUTE_TOLERANCE,
+            )
+        )
         self.assertLess(abs(final.inputs.loss_kinetic_stator - final.stator_loss.kinetic_loss), LOSS_TOLERANCE)
         self.assertLess(abs(final.inputs.loss_kinetic_rotor - final.rotor_loss.kinetic_loss), LOSS_TOLERANCE)
         self.assertAlmostEqual(solution.efficiency.total_to_static,
                                final.meanline.eta_ts * (1 - final.rotor_loss.tip_efficiency_debit))
+
+    def test_balance_residual_failures_prevent_converged_status(self) -> None:
+        solution = solve_stage(StageDesign())
+        final = solution.final
+        invalid_meanlines = (
+            ("mass", replace(final.meanline, residual=2 * MASS_FLOW_TOLERANCE)),
+            ("energy", replace(final.meanline, work_thermo=final.meanline.work_thermo + 1.0)),
+        )
+
+        for residual_type, meanline in invalid_meanlines:
+            with self.subTest(residual_type=residual_type):
+                invalid_final = replace(final, meanline=meanline)
+                invalid_solution = replace(
+                    solution,
+                    evaluations=solution.evaluations[:-1] + (invalid_final,),
+                )
+                self.assertFalse(invalid_solution.converged)
+                self.assertFalse(invalid_solution.feasible)
+
+    def test_max_pass_exhaustion_is_explicitly_non_converged(self) -> None:
+        design = StageDesign()
+        evaluation = evaluate_stage(design.inputs, design)
+        report = StringIO()
+
+        with patch("Helpers.stage_solver.MAX_PASSES", 2), patch(
+            "Helpers.stage_solver.evaluate_stage",
+            return_value=evaluation,
+        ), patch("Helpers.stage_solver.loss_change", return_value=LOSS_TOLERANCE), patch(
+            "sys.stdout",
+            report,
+        ):
+            solution = solve_stage(design)
+            print_stage_report(solution)
+
+        self.assertEqual(len(solution.evaluations), 2)
+        self.assertFalse(solution.converged)
+        self.assertFalse(solution.feasible)
+        self.assertIn("NOT converged after 2 passes", report.getvalue())
+        self.assertIn("(maximum 2;", report.getvalue())
+
+    def test_stage_report_prints_converged_residuals(self) -> None:
+        report = StringIO()
+        solution = solve_stage(StageDesign())
+
+        with patch("sys.stdout", report):
+            print_stage_report(solution)
+
+        self.assertIn("Final coupled residuals", report.getvalue())
+        self.assertIn("Mass-flow residual [kg/s]", report.getvalue())
+        self.assertIn("Euler-energy residual [J/kg]", report.getvalue())
+        self.assertIn("Stator loss-coefficient residual", report.getvalue())
+        self.assertIn("Rotor loss-coefficient residual", report.getvalue())
 
     def test_current_default_design_violates_the_blade_speed_limit(self) -> None:
         solution = solve_stage(StageDesign())
@@ -219,6 +333,74 @@ class TurbineTests(unittest.TestCase):
 
         self.assertAlmostEqual(turbine.performance.total_to_static, alone.efficiency.total_to_static)
         self.assertAlmostEqual(turbine.performance.total_to_total, alone.efficiency.total_to_total)
+
+    def test_overall_work_power_efficiencies_and_exit_energy_reconcile(self) -> None:
+        stage = StageDesign(inputs=TWO_STAGE_INPUTS)
+        designs = (
+            TurbineDesign(stages=(stage,)),
+            TurbineDesign(stages=(stage, stage), expansion_shares=(0.5, 0.5)),
+        )
+
+        for design in designs:
+            turbine = solve_turbine(design)
+            performance = turbine.performance
+            exit_meanline = turbine.stages[-1].final.meanline
+            inlet_state = AirState.from_temperature_pressure(
+                design.inlet.T_0,
+                design.inlet.P_0 * 1e5,
+            )
+            ideal_static = AirState.isentropic_from_temperature_pressure(
+                design.inlet.T_0,
+                design.inlet.P_0 * 1e5,
+                exit_meanline.P_s3 * 1e5,
+            )
+            ideal_total = AirState.isentropic_from_temperature_pressure(
+                design.inlet.T_0,
+                design.inlet.P_0 * 1e5,
+                exit_meanline.P_03 * 1e5,
+            )
+            expected_work = math.fsum(stage.efficiency.specific_work for stage in turbine.stages)
+            exit_swirl_velocity = exit_meanline.v_3 * math.sin(math.radians(exit_meanline.alpha_3))
+
+            with self.subTest(stage_count=len(design.stages)):
+                self.assertAlmostEqual(performance.specific_work, expected_work)
+                self.assertAlmostEqual(performance.power_w, expected_work * design.inlet.m_dot)
+                self.assertAlmostEqual(
+                    performance.exit_kinetic_energy_j_kg,
+                    exit_meanline.rotor_exit_stagnation_air_state.enthalpy_j_kg
+                    - exit_meanline.rotor_exit_air_state.enthalpy_j_kg,
+                )
+                self.assertAlmostEqual(
+                    performance.exit_kinetic_energy_j_kg,
+                    0.5
+                    * (
+                        (exit_meanline.v_3 * math.cos(math.radians(exit_meanline.alpha_3))) ** 2
+                        + exit_swirl_velocity**2
+                    ),
+                )
+                self.assertAlmostEqual(
+                    performance.exit_swirl_kinetic_energy_j_kg,
+                    0.5 * exit_swirl_velocity**2,
+                )
+                self.assertAlmostEqual(
+                    performance.total_to_static,
+                    expected_work
+                    / (inlet_state.enthalpy_j_kg - ideal_static.enthalpy_j_kg),
+                )
+                self.assertAlmostEqual(
+                    performance.total_to_total,
+                    expected_work
+                    / (inlet_state.enthalpy_j_kg - ideal_total.enthalpy_j_kg),
+                )
+                self.assertAlmostEqual(math.fsum(performance.work_shares), 1.0)
+
+            if len(design.stages) == 1:
+                report = StringIO()
+                with patch("sys.stdout", report):
+                    print_turbine_report(turbine)
+                self.assertIn("Power [MW]", report.getvalue())
+                self.assertIn("Exit kinetic energy [kJ/kg]", report.getvalue())
+                self.assertIn("Exit swirl kinetic energy [kJ/kg]", report.getvalue())
 
     def test_second_stage_starts_from_the_first_stage_exit(self) -> None:
         stage = StageDesign(inputs=TWO_STAGE_INPUTS)
@@ -253,9 +435,84 @@ class TurbineTests(unittest.TestCase):
             TurbineDesign(stages=(stage, stage), expansion_shares=(0.6, 0.6))
         with self.assertRaises(ValueError):
             TurbineDesign(stages=(stage, other_speed), expansion_shares=(0.5, 0.5))
+        with self.assertRaisesRegex(ValueError, "one or two stages"):
+            TurbineDesign(
+                stages=(stage, stage, stage),
+                expansion_shares=(1 / 3, 1 / 3, 1 / 3),
+            )
+        with self.assertRaisesRegex(ValueError, "finite and positive"):
+            TurbineDesign(stages=(stage,), expansion_shares=(float("nan"),))
 
 
 class OptimizerTests(unittest.TestCase):
+    def test_design_space_only_supports_one_or_two_stages(self) -> None:
+        for stage_count in (0, 3, 1.0, True):
+            with self.subTest(stage_count=stage_count), self.assertRaises(ValueError):
+                DesignSpace(stage_count)
+
+    def test_decode_rejects_out_of_range_or_malformed_vectors(self) -> None:
+        space = DesignSpace(1)
+        lower, upper = np.array(space.scipy_bounds()).T
+        valid = (lower + upper) / 2
+        outside = valid.copy()
+        outside[2] = upper[2] + 0.01
+
+        with self.assertRaisesRegex(ValueError, "design variable 2"):
+            space.decode(outside)
+        with self.assertRaisesRegex(ValueError, "expected"):
+            space.decode(valid[:-1])
+
+    def test_variable_bounds_reject_physically_invalid_ranges(self) -> None:
+        with self.assertRaisesRegex(ValueError, "radius_ratio"):
+            VariableBounds(radius_ratio=(0.9, 1.1))
+
+    def test_default_exit_flow_limits_are_disabled_and_optional_limits_are_enforced(self) -> None:
+        meanline = solve_meanline()
+        shaft_speed = meanline.omega * 60 / (2 * math.pi)
+        default_constraints = stage_constraints(meanline, shaft_speed, 0.2, 0)
+        limited_constraints = stage_constraints(
+            meanline,
+            shaft_speed,
+            0.2,
+            0,
+            ExitFlowLimits(
+                max_absolute_exit_mach=meanline.M_3 / 2,
+                max_absolute_exit_swirl_m_s=abs(
+                    meanline.v_3 * math.sin(math.radians(meanline.alpha_3))
+                )
+                / 2,
+            ),
+        )
+
+        self.assertNotIn("Rotor exit absolute Mach", {constraint.name for constraint in default_constraints})
+        exit_constraints = {
+            constraint.name: constraint
+            for constraint in limited_constraints
+            if constraint.name.startswith("Rotor exit absolute")
+        }
+        self.assertFalse(exit_constraints["Rotor exit absolute Mach"].satisfied)
+        self.assertFalse(exit_constraints["Rotor exit absolute swirl [m/s]"].satisfied)
+        space = DesignSpace(1, exit_flow_limits=ExitFlowLimits(max_absolute_exit_mach=1.0))
+        lower, upper = np.array(space.scipy_bounds()).T
+        decoded = space.decode((lower + upper) / 2)
+        self.assertEqual(decoded.stages[0].exit_flow_limits.max_absolute_exit_mach, 1.0)
+
+    def test_sweep_values_stay_within_canonical_optimizer_bounds(self) -> None:
+        bounds = VariableBounds()
+        grid = SweepGrid(bounds=bounds)
+        for values, (lower, upper) in (
+            (grid.blade_speeds, bounds.blade_speed),
+            (grid.shaft_speeds, bounds.shaft_speed),
+            (grid.radius_ratios, bounds.radius_ratio),
+            (grid.reactions, bounds.reaction),
+            (grid.stator_exit_angles, bounds.stator_exit_angle),
+            (grid.rotor_exit_angles, bounds.rotor_exit_angle),
+        ):
+            self.assertTrue(all(lower <= value <= upper for value in values))
+
+        with self.assertRaisesRegex(ValueError, "outside"):
+            SweepGrid(radius_ratios=(1.0, 1.16), bounds=bounds)
+
     def test_decoded_first_rotor_never_exceeds_its_blade_speed(self) -> None:
         random = np.random.default_rng(seed=3)
         for stage_count in (1, 2):
@@ -283,10 +540,10 @@ class OptimizerTests(unittest.TestCase):
         self.assertTrue(screened.error)
 
     def test_unusable_expansion_shares_get_the_failure_penalty(self) -> None:
-        space = DesignSpace(3)
+        space = DesignSpace(2)
         lower, upper = np.array(space.scipy_bounds()).T
         variables = (lower + upper) / 2
-        variables[-2:] = 0.6
+        variables[-1] = upper[-1] + 0.1
 
         self.assertEqual(penalized_objective(variables, space), MODEL_FAILURE_PENALTY)
 
