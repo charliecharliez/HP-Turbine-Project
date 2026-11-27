@@ -19,7 +19,7 @@ from RadialEquilibrium.radial_equilibrium_solver import SpanwiseFlow
 
 __all__ = ["Airfoil", "AirfoilSide", "BladeRow", "BladeRowDesign", "BladeSection", "OffsetPoint",
            "ProfileShape", "SectionFlow", "TrailingEdgeCircle", "blade_row", "estimated_airfoil_params",
-           "print_blade_row", "rotor_row", "stagger_chart_covers", "stator_row"]
+           "print_blade_row", "rotor_row", "section_buildable", "stagger_chart_covers", "stator_row"]
 
 _SUCTION_SIDE = 1.0  # sign along the camber suction normals
 _PRESSURE_SIDE = -1.0
@@ -511,6 +511,17 @@ def stagger_chart_covers(inlet_angle: float, exit_angle: float) -> bool:
         return False
     lowest_inlet, highest_inlet = beta_1_range(ko_exit)
     return lowest_inlet <= ko_inlet <= highest_inlet
+
+
+def section_buildable(inlet_angle: float, exit_angle: float) -> bool:
+    """Whether KO Fig. 5 covers these signed angles [deg] and the camberline through them does not double back."""
+    if not stagger_chart_covers(inlet_angle, exit_angle):
+        return False
+    try:
+        Camberline(1.0, kacker_okapuu_stagger(inlet_angle, exit_angle), inlet_angle, exit_angle)
+    except ValueError:
+        return False
+    return True
 
 
 def estimated_airfoil_params(design: BladeRowDesign, inlet_angle: float, exit_angle: float) -> AirfoilParams:

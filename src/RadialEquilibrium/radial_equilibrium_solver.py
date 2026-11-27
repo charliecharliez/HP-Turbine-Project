@@ -6,12 +6,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure
 from scipy.integrate import quad
 from scipy.optimize import root_scalar
 
 from Meanline.gas_props import GAS
 from Meanline.solve_meanline import MeanlineResult
+from velocity_triangle import VelocityTriangle
 
 Station = Literal[2, 3]  # 2: stator exit, 3: rotor exit
 Radius = float | np.ndarray  # m
@@ -308,6 +311,22 @@ SPANWISE_TABLE_ROWS: tuple[tuple[str, Callable[[SpanPosition], float], str], ...
     ("Work [kJ/kg]", lambda span: span.specific_work / 1e3, ".1f"),
     ("Degree of reaction", lambda span: span.degree_of_reaction, ".3f"),
 )
+
+
+SPAN_TRIANGLE_FIGURE_SIZE = (12.2, 15.0)  # in
+
+
+def plot_spanwise_velocity_triangles(flow: SpanwiseFlow, title: str) -> Figure:
+    """Stator exit (station 2, solid) and rotor exit (station 3, dashed) triangles at hub, midspan and tip."""
+    figure, axes = plt.subplots(3, 1, figsize=SPAN_TRIANGLE_FIGURE_SIZE, layout="constrained")
+    for ax, (name, span) in zip(axes, (("Hub", flow.hub), ("Midspan", flow.midspan), ("Tip", flow.tip))):
+        triangles = [VelocityTriangle(state.blade_speed, state.axial_velocity, state.tangential_velocity,
+                                      station=station)
+                     for station, state in ((2, span.stator_exit), (3, span.rotor_exit))]
+        radii = f"r_2 = {span.stator_exit.radius * 1e3:.1f} mm, r_3 = {span.rotor_exit.radius * 1e3:.1f} mm"
+        VelocityTriangle.plot_combined(*triangles, ax=ax, title=f"{name}   ({radii})")
+    figure.suptitle(title, x=0.01, ha="left", fontsize=13)
+    return figure
 
 
 def print_spanwise_table(flow: SpanwiseFlow) -> None:

@@ -42,6 +42,19 @@ class MeanlineTests(unittest.TestCase):
         self.assertGreater(meanline.beta_2, 0.0)
         self.assertAlmostEqual(meanline.M_3rel, meanline.w_3 / speed_of_sound_3)
 
+    def test_flow_coefficient_input_sets_the_rotor_exit_angle(self) -> None:
+        by_angle = solve_meanline(Inputs())
+        by_flow_coefficient = solve_meanline(Inputs(beta_3=None, flow_coefficient=by_angle.flow_coefficient))
+
+        self.assertAlmostEqual(by_flow_coefficient.beta_3, by_angle.beta_3)
+        self.assertAlmostEqual(by_flow_coefficient.flow_coefficient, by_angle.flow_coefficient)
+
+    def test_inputs_need_exactly_one_rotor_exit_setting(self) -> None:
+        with self.assertRaises(ValueError):
+            Inputs(beta_3=-60.0, flow_coefficient=0.5)
+        with self.assertRaises(ValueError):
+            Inputs(beta_3=None)
+
 
 class InterfaceTests(unittest.TestCase):
     def test_free_vortex_midspan_reproduces_a_downstream_stage(self) -> None:
@@ -188,6 +201,18 @@ class OptimizerTests(unittest.TestCase):
 
         self.assertFalse(screened.feasible)
         self.assertTrue(screened.error)
+
+    def test_encode_reproduces_a_solved_design_in_either_rotor_exit_setting(self) -> None:
+        angle_space = DesignSpace(1)
+        lower, upper = np.array(angle_space.scipy_bounds()).T
+        solution = solve_turbine(angle_space.decode((lower + upper) / 2))
+        meanlines = [stage.final.meanline for stage in solution.stages]
+        flow_coefficient_space = DesignSpace(1, rotor_exit_setting="flow_coefficient")
+        by_flow_coefficient = flow_coefficient_space.decode(flow_coefficient_space.encode(solution.design, meanlines))
+
+        self.assertEqual(angle_space.decode(angle_space.encode(solution.design, meanlines)), solution.design)
+        self.assertAlmostEqual(by_flow_coefficient.stages[0].inputs.flow_coefficient,
+                               round(solution.stages[0].final.meanline.flow_coefficient, 2))
 
     def test_unusable_expansion_shares_get_the_failure_penalty(self) -> None:
         space = DesignSpace(3)

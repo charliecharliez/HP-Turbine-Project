@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Literal
 
 import numpy as np
-from scipy.optimize import differential_evolution
+from scipy.optimize import OptimizeResult, differential_evolution
 
-from Airfoil.airfoil import estimated_airfoil_params, stagger_chart_covers
+from Airfoil.airfoil import estimated_airfoil_params, section_buildable
 from Losses.losses_solver import StageEfficiency, rotor_losses, stage_efficiency, stator_losses
 from Meanline.solve_meanline import Inputs, MeanlineResult, solve_meanline
 from RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
@@ -22,8 +23,9 @@ RADIUS_DECIMALS = 4  # m, radii rounded down so blade speeds never exceed their 
 SHAFT_SPEED_DECIMALS = -1  # rpm
 REACTION_DECIMALS = 2
 ANGLE_DECIMALS = 1  # deg
+FLOW_COEFFICIENT_DECIMALS = 2
 SHARE_DECIMALS = 2
-VARIABLES_PER_STAGE = 4  # radius ratio, reaction, stator exit angle, rotor exit angle
+VARIABLES_PER_STAGE = 4  # radius ratio, reaction, stator exit angle, rotor exit setting
 MODEL_FAILURE_PENALTY = 10.0
 INFEASIBLE_OFFSET = 1.0  # ranks every infeasible design below every feasible one
 POPULATION_SIZE = 15  # multiplier of the number of variables
@@ -31,6 +33,9 @@ MAX_GENERATIONS = 300
 CONVERGENCE_TOLERANCE = 1e-4
 CANDIDATES_TO_VERIFY = 6
 FIRST_GUESS = Inputs(loss_kinetic_stator=0.08, loss_kinetic_rotor=0.10)
+
+MapFunction = Callable[..., Iterable]
+RotorExitSetting = Literal["angle", "flow_coefficient"]  # what each stage's last variable sets: beta_3 or phi
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +49,7 @@ class VariableBounds:
     reaction: tuple[float, float] = (0.0, 0.6)
     stator_exit_angle: tuple[float, float] = (52.0, 78.0)  # deg
     rotor_exit_angle: tuple[float, float] = (-78.0, -52.0)  # deg
+    flow_coefficient: tuple[float, float] = (0.35, 0.90)
     expansion_share: tuple[float, float] = (0.3, 0.7)  # of every stage but the last, which takes the rest
 
 
@@ -54,10 +60,23 @@ class DesignSpace:
     stage_count: int
     bounds: VariableBounds = field(default_factory=VariableBounds)
     base_stage: StageDesign = field(default_factory=lambda: StageDesign(inputs=FIRST_GUESS))
+    rotor_exit_setting: RotorExitSetting = "angle"
+
+    def encode(self, design: TurbineDesign, meanlines: Sequence[MeanlineResult]) -> list[float]:
+        """Variable vector of a solved turbine with this space's stage count; decode returns its design."""
+        first = design.stages[0].inputs
+        blade_speed = first.N_shaft * 2 * math.pi / 60 * first.radius_3
+        stage_variables = []
+        for stage, meanline in zip(design.stages, meanlines):
+            rotor_exit = meanline.beta_3 if self.rotor_exit_setting == "angle" else meanline.flow_coefficient
+            stage_variables += [stage.inputs.radius_3 / stage.inputs.radius_2, stage.inputs.degree_of_reaction,
+                                stage.inputs.alpha_2, rotor_exit]
+        return [first.N_shaft, blade_speed, *stage_variables, *design.expansion_shares[:-1]]
 
     def scipy_bounds(self) -> list[tuple[float, float]]:
         bounds = self.bounds
-        per_stage = [bounds.radius_ratio, bounds.reaction, bounds.stator_exit_angle, bounds.rotor_exit_angle]
+        rotor_exit = bounds.rotor_exit_angle if self.rotor_exit_setting == "angle" else bounds.flow_coefficient
+        per_stage = [bounds.radius_ratio, bounds.reaction, bounds.stator_exit_angle, rotor_exit]
         shares = [bounds.expansion_share] * (self.stage_count - 1)
         return [bounds.shaft_speed, bounds.blade_speed, *per_stage * self.stage_count, *shares]
 
@@ -73,17 +92,21 @@ class DesignSpace:
 
         stages = []
         rotor_exit_radius = round_down(blade_speed / omega, RADIUS_DECIMALS)
-        for index, (radius_ratio, reaction, alpha_2, beta_3) in enumerate(stage_variables):
+        for index, (radius_ratio, reaction, alpha_2, rotor_exit) in enumerate(stage_variables):
             if index == 0:
                 stator_exit_radius = round_down(rotor_exit_radius / radius_ratio, RADIUS_DECIMALS)
             else:
                 stator_exit_radius = rotor_exit_radius
                 rotor_exit_radius = round_down(stator_exit_radius * radius_ratio, RADIUS_DECIMALS)
+            if self.rotor_exit_setting == "angle":
+                rotor_exit_inputs = {"beta_3": round(float(rotor_exit), ANGLE_DECIMALS), "flow_coefficient": None}
+            else:
+                rotor_exit_inputs = {"beta_3": None,
+                                     "flow_coefficient": round(float(rotor_exit), FLOW_COEFFICIENT_DECIMALS)}
             inputs = replace(self.base_stage.inputs, N_shaft=shaft_speed, radius_2=stator_exit_radius,
                              radius_3=rotor_exit_radius,
                              degree_of_reaction=round(float(reaction), REACTION_DECIMALS),
-                             alpha_2=round(float(alpha_2), ANGLE_DECIMALS),
-                             beta_3=round(float(beta_3), ANGLE_DECIMALS))
+                             alpha_2=round(float(alpha_2), ANGLE_DECIMALS), **rotor_exit_inputs)
             stages.append(replace(self.base_stage, inputs=inputs))
 
         shares = (*leading_shares, round(1.0 - math.fsum(leading_shares), SHARE_DECIMALS))
@@ -97,9 +120,10 @@ def round_down(value: float, decimals: int) -> float:
 
 def design_key(design: TurbineDesign) -> tuple[float, ...]:
     stage_values = [(stage.inputs.N_shaft, stage.inputs.radius_2, stage.inputs.radius_3,
-                     stage.inputs.degree_of_reaction, stage.inputs.alpha_2, stage.inputs.beta_3)
+                     stage.inputs.degree_of_reaction, stage.inputs.alpha_2, stage.inputs.beta_3,
+                     stage.inputs.flow_coefficient)
                     for stage in design.stages]
-    return tuple(round(value, 6) for values in stage_values for value in values) + tuple(
+    return tuple(math.nan if value is None else round(value, 6) for values in stage_values for value in values) + tuple(
         round(share, 6) for share in design.expansion_shares)
 
 
@@ -149,11 +173,12 @@ def screen_stage(design: StageDesign) -> ScreenedStage:
         raise ValueError("Screening loss loop did not converge")
 
     spanwise_flow = solve_radial_equilibrium(meanline, design.vortex_exponent)
-    for span in (spanwise_flow.hub, spanwise_flow.tip):
-        stator_covered = stagger_chart_covers(meanline.alpha_1, span.stator_exit.absolute_angle)
-        rotor_covered = stagger_chart_covers(span.stator_exit.relative_angle, span.rotor_exit.relative_angle)
-        if not (stator_covered and rotor_covered):
-            raise ValueError(f"Stagger chart: span fraction {span.span_fraction:g} outside KO Fig. 5")
+    for span in (spanwise_flow.hub, spanwise_flow.midspan, spanwise_flow.tip):
+        stator_buildable = section_buildable(meanline.alpha_1, span.stator_exit.absolute_angle)
+        rotor_buildable = section_buildable(span.stator_exit.relative_angle, span.rotor_exit.relative_angle)
+        if not (stator_buildable and rotor_buildable):
+            raise ValueError(f"Blade sections at span fraction {span.span_fraction:g} outside the stagger chart "
+                             f"or camberline range")
 
     chart_warning_count = len(stator_loss.chart_warnings + rotor_loss.chart_warnings)
     return ScreenedStage(
@@ -233,25 +258,45 @@ def best_distinct_designs(space: DesignSpace, population: np.ndarray, energies: 
     return designs
 
 
-def optimize_turbine(space: DesignSpace, seed: int = 1, workers: int = 1,
-                     max_generations: int = MAX_GENERATIONS) -> OptimizationResult:
-    """Maximize screened eta_ts by differential evolution, then verify the best designs with the full loop."""
-    search = differential_evolution(
-        penalized_objective, space.scipy_bounds(), args=(space,), seed=seed, workers=workers,
-        updating="deferred", popsize=POPULATION_SIZE, maxiter=max_generations, tol=CONVERGENCE_TOLERANCE,
-        polish=False,
+def verify_design(design: TurbineDesign) -> TurbineSolution | str:
+    """Full-loop solution, or the reason a model failed."""
+    try:
+        return solve_turbine(design)
+    except MODEL_ERRORS as error:
+        return f"{type(error).__name__}: {error}"
+
+
+def search_designs(space: DesignSpace, seed: int = 1, workers: int | MapFunction = 1,
+                   max_generations: int = MAX_GENERATIONS, population_size: int = POPULATION_SIZE,
+                   start: Sequence[float] | None = None) -> OptimizeResult:
+    """Differential evolution on the screened, penalized eta_ts; start is a variable vector, clipped to the bounds."""
+    bounds = space.scipy_bounds()
+    lower, upper = np.array(bounds).T
+    initial_guess = None if start is None else np.clip(start, lower, upper)
+    return differential_evolution(
+        penalized_objective, bounds, args=(space,), seed=seed, workers=workers, updating="deferred",
+        popsize=population_size, maxiter=max_generations, tol=CONVERGENCE_TOLERANCE, polish=False,
+        x0=initial_guess,
     )
+
+
+def optimize_turbine(space: DesignSpace, seed: int = 1, workers: int | MapFunction = 1,
+                     candidates_to_verify: int = CANDIDATES_TO_VERIFY) -> OptimizationResult:
+    """Maximize screened eta_ts by differential evolution, then verify the best designs with the full loop."""
+    search = search_designs(space, seed=seed, workers=workers)
+    candidates = best_distinct_designs(space, search.population, search.population_energies, candidates_to_verify)
+    map_designs = workers if callable(workers) else map
+    outcomes = list(map_designs(verify_design, [design for design, _ in candidates]))
 
     verified: list[TurbineSolution] = []
     verification_errors: list[tuple[TurbineDesign, str]] = []
     screened_efficiency: dict[tuple[float, ...], float] = {}
-    for design, efficiency in best_distinct_designs(space, search.population, search.population_energies,
-                                                    CANDIDATES_TO_VERIFY):
+    for (design, efficiency), outcome in zip(candidates, outcomes):
         screened_efficiency[design_key(design)] = efficiency
-        try:
-            verified.append(solve_turbine(design))
-        except MODEL_ERRORS as error:
-            verification_errors.append((design, f"{type(error).__name__}: {error}"))
+        if isinstance(outcome, str):
+            verification_errors.append((design, outcome))
+        else:
+            verified.append(outcome)
     return OptimizationResult(space, search.nfev, search.nit, search.message, tuple(verified),
                               tuple(verification_errors), screened_efficiency)
 

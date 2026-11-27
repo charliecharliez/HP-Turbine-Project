@@ -23,10 +23,15 @@ class Inputs:
     radius_2: float = 0.5  # m, stator exit mean radius
     radius_3: float = 0.6  # m, rotor exit mean radius
     alpha_2: float = 71  # deg, stator exit absolute flow angle
-    beta_3: float = -61  # deg, rotor exit relative flow angle
+    beta_3: float | None = -61  # deg, rotor exit relative flow angle; None when flow_coefficient sets it
     loss_kinetic_stator: float = 0.027  # xi = 1 - V^2 / V_is^2
     loss_kinetic_rotor: float = 0.054  # xi = 1 - W^2 / W_is^2
     pressure_ratio: float = boundary_conditions.pressure_ratio_TS  # P_01 / P_s3 of this stage
+    flow_coefficient: float | None = None  # mean axial velocity across the rotor / u_mean; sets beta_3 when given
+
+    def __post_init__(self) -> None:
+        if (self.beta_3 is None) == (self.flow_coefficient is None):
+            raise ValueError("Give exactly one of beta_3 and flow_coefficient")
 
 
 @dataclass(frozen=True)
@@ -109,6 +114,20 @@ def subsonic_mach_number(mass_flow: float, area: float, total_temperature: float
     return solution.root
 
 
+def rotor_exit_angle(inputs: Inputs, axial_velocity_2: float, relative_speed_3: float,
+                     mean_blade_speed: float) -> float:  # rad
+    """Rotor exit relative angle, given directly or by the flow coefficient; velocities in m/s."""
+    if inputs.beta_3 is not None:
+        return math.radians(inputs.beta_3)
+    if inputs.flow_coefficient is None:
+        raise ValueError("Give exactly one of beta_3 and flow_coefficient")
+    axial_velocity_3 = 2 * inputs.flow_coefficient * mean_blade_speed - axial_velocity_2
+    if not 0 < axial_velocity_3 < relative_speed_3:
+        raise ValueError(f"Flow coefficient {inputs.flow_coefficient:g} needs a rotor exit axial velocity of "
+                         f"{axial_velocity_3:.1f} m/s, outside (0, W_3 = {relative_speed_3:.1f} m/s)")
+    return -math.acos(axial_velocity_3 / relative_speed_3)
+
+
 def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> MeanlineResult:
     C_p, k, R = GAS.C_p, GAS.gamma, GAS.R
     exponent = (k - 1) / k
@@ -119,6 +138,7 @@ def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> M
     omega = inputs.N_shaft * 2 * math.pi / 60
     u_2 = omega * inputs.radius_2
     u_3 = omega * inputs.radius_3
+    u_mean = (u_2 + u_3) / 2
 
     # Stator exit
     T_2is = T_01 * (P_s2 / P_01) ** exponent
@@ -137,7 +157,7 @@ def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> M
     T_03_relative = T_2 + (w_2**2 + u_3**2 - u_2**2) / (2 * C_p)
     w_3 = math.sqrt((1 - inputs.loss_kinetic_rotor) * 2 * C_p * (T_03_relative - T_3is))
     T_3 = T_03_relative - w_3**2 / (2 * C_p)
-    beta_3 = math.radians(inputs.beta_3)
+    beta_3 = rotor_exit_angle(inputs, v_x2, w_3, u_mean)
     v_x3 = w_3 * math.cos(beta_3)
     v_theta_3 = u_3 + w_3 * math.sin(beta_3)
     v_3 = math.hypot(v_x3, v_theta_3)
@@ -150,7 +170,6 @@ def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> M
     # Performance
     work_euler = u_2 * v_theta_2 - u_3 * v_theta_3
     work_thermo = C_p * (T_01 - T_03)
-    u_mean = (u_2 + u_3) / 2
     ideal_drop_static = C_p * T_01 * (1 - (P_s3 / P_01) ** exponent)
     ideal_drop_total = C_p * T_01 * (1 - (P_03 / P_01) ** exponent)
 
@@ -166,7 +185,7 @@ def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> M
         beta_2=math.degrees(math.atan2(v_theta_2 - u_2, v_x2)),
         v_3=v_3, w_3=w_3, u_3=u_3,
         alpha_3=math.degrees(math.atan2(v_theta_3, v_x3)),
-        beta_3=inputs.beta_3,
+        beta_3=math.degrees(beta_3),
         M_2=v_2 / speed_of_sound_2,
         M_2rel=w_2 / speed_of_sound_2,
         M_3=v_3 / speed_of_sound_3,
