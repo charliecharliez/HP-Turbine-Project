@@ -369,6 +369,7 @@ class SectionFlow:
     inlet_angle: float
     exit_angle: float
     exit_mach: float
+    gamma: float = 1.4
 
 
 @dataclass(frozen=True)
@@ -490,7 +491,7 @@ def stator_section_flows(flow: SpanwiseFlow) -> list[SectionFlow]:
     for span_fraction in SPAN_FRACTIONS.values():
         stator_exit = flow.at_span(span_fraction).stator_exit
         sections.append(SectionFlow(span_fraction, stator_exit.radius, flow.stator_inlet_angle,
-                                    stator_exit.absolute_angle, stator_exit.mach))
+                                    stator_exit.absolute_angle, stator_exit.mach, stator_exit.gamma))
     return sections
 
 
@@ -499,7 +500,8 @@ def rotor_section_flows(flow: SpanwiseFlow) -> list[SectionFlow]:
     for span_fraction in SPAN_FRACTIONS.values():
         span = flow.at_span(span_fraction)
         sections.append(SectionFlow(span_fraction, span.rotor_exit.radius, span.stator_exit.relative_angle,
-                                    span.rotor_exit.relative_angle, span.rotor_exit.relative_mach))
+                                    span.rotor_exit.relative_angle, span.rotor_exit.relative_mach,
+                                    span.rotor_exit.gamma))
     return sections
 
 
@@ -537,7 +539,7 @@ def solve_exit_metal_angle(flow: SectionFlow, pitch_axial_chord: float, shape: P
     def exit_angle_error(metal_angle_magnitude: float) -> float:
         airfoil = section_airfoil(flow, exit_direction * metal_angle_magnitude, shape)
         throat_pitch = measure_throat(airfoil, pitch_axial_chord) / pitch_axial_chord
-        return throat_exit_angle(throat_pitch, flow.exit_mach, GAS.gamma) - abs(flow.exit_angle)
+        return throat_exit_angle(throat_pitch, flow.exit_mach, flow.gamma) - abs(flow.exit_angle)
 
     try:
         bracket = sign_change_bracket(exit_angle_error, abs(flow.exit_angle), lowest_magnitude, highest_magnitude)
@@ -575,7 +577,7 @@ def blade_section(flow: SectionFlow, axial_chord: float, pitch: float, shape: Pr
         axial_chord=axial_chord,
         pitch=pitch,
         throat=throat,
-        throat_exit_angle=throat_exit_angle(throat / pitch, flow.exit_mach, GAS.gamma),
+        throat_exit_angle=throat_exit_angle(throat / pitch, flow.exit_mach, flow.gamma),
     )
 
 

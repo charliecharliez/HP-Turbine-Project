@@ -27,9 +27,31 @@ from Losses.losses_solver import (
     trailing_edge_loss,
 )
 from Meanline import gas_props
+from Meanline.gas_props import AirState
 
 
 class FoundationRepairTests(unittest.TestCase):
+    def test_variable_air_states_close_entropic_entropy_and_perfect_gas_identity(self) -> None:
+        inlet = AirState.from_temperature_pressure(1850.0, 2_000_000.0)
+        exit = AirState.isentropic_from_temperature_pressure(
+            inlet.temperature_k,
+            inlet.pressure_pa,
+            487_804.8780487805,
+        )
+
+        self.assertAlmostEqual(
+            inlet.entropy_j_kg_k,
+            exit.entropy_j_kg_k,
+            delta=1e-6,
+        )
+        self.assertAlmostEqual(
+            inlet.cp_j_kg_k,
+            inlet.gamma * inlet.gas_constant_j_kg_k / (inlet.gamma - 1),
+            places=8,
+        )
+        self.assertNotAlmostEqual(inlet.cp_j_kg_k, exit.cp_j_kg_k, places=3)
+        self.assertNotAlmostEqual(inlet.gamma, exit.gamma, places=5)
+
     def test_all_required_ko_charts_load(self) -> None:
         chart_names = (
             "ko_fig01_yp_nozzle.csv",

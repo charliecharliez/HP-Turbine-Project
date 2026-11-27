@@ -10,7 +10,7 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import root_scalar
 
-from Meanline.gas_props import GAS
+from Meanline.gas_props import AirState, GAS
 from Meanline.solve_meanline import MeanlineResult
 
 Station = Literal[2, 3]  # 2: stator exit, 3: rotor exit
@@ -126,6 +126,9 @@ class StationState:
     density: float  # kg/m^3
     mach: float
     relative_mach: float
+    cp_j_kg_k: float = 0.0
+    gamma: float = 0.0
+    viscosity_pa_s: float = 0.0
 
     @property
     def relative_tangential_velocity(self) -> float:
@@ -169,13 +172,32 @@ class SpanwiseFlow:
     inlet_total_temperature: float  # K
     inlet_total_pressure: float  # bar
     stator_inlet_angle: float  # deg, absolute, uniform across the span
+    inlet_air_state: AirState | None = None
+    stator_exit_air_state: AirState | None = None
+    rotor_exit_air_state: AirState | None = None
 
     def degree_of_reaction(self, stator_exit_pressure: float, rotor_exit_pressure: float) -> float:
-        """Meanline definition, inverting its P_s2 = P_01 (1 - (1 - R)(1 - (P_s3 / P_01)^((k-1)/k)))^(k/(k-1))."""
-        exponent = (GAS.gamma - 1) / GAS.gamma
-        stator_exit_ratio = (stator_exit_pressure / self.inlet_total_pressure) ** exponent
-        rotor_exit_ratio = (rotor_exit_pressure / self.inlet_total_pressure) ** exponent
-        return (stator_exit_ratio - rotor_exit_ratio) / (1 - rotor_exit_ratio)
+        """Degree of reaction from CoolProp isentropic enthalpy drops."""
+        inlet = AirState.from_temperature_pressure(
+            self.inlet_total_temperature,
+            self.inlet_total_pressure * BAR,
+        )
+        stator_isentropic = AirState.isentropic_from_temperature_pressure(
+            self.inlet_total_temperature,
+            self.inlet_total_pressure * BAR,
+            stator_exit_pressure * BAR,
+        )
+        rotor_isentropic = AirState.isentropic_from_temperature_pressure(
+            self.inlet_total_temperature,
+            self.inlet_total_pressure * BAR,
+            rotor_exit_pressure * BAR,
+        )
+        stator_drop = inlet.enthalpy_j_kg - stator_isentropic.enthalpy_j_kg
+        rotor_drop = inlet.enthalpy_j_kg - rotor_isentropic.enthalpy_j_kg
+        if rotor_drop == 0:
+            return 0.0
+        local_overall_drop = rotor_drop
+        return 1 - stator_drop / local_overall_drop
 
     def axial_velocity(self, radius: Radius, station: Station) -> Radius:
         shape = self.law.axial_velocity_squared_shape(radius, station)
@@ -200,19 +222,75 @@ class SpanwiseFlow:
     def total_temperature(self, radius: Radius, station: Station) -> Radius:  # K
         if station == 2:
             return self.inlet_total_temperature
-        return self.inlet_total_temperature - self.specific_work(radius) / GAS.C_p
+        inlet_state = AirState.from_temperature_pressure(
+            self.inlet_total_temperature,
+            self.inlet_total_pressure * BAR,
+        )
+        exit_enthalpy = inlet_state.enthalpy_j_kg - self.specific_work(radius)
+        exit_pressure = self.mean_static_pressure[3] * BAR
+
+        def temperature_at(enthalpy: float) -> float:
+            return AirState.from_enthalpy_pressure(float(enthalpy), exit_pressure).temperature_k
+
+        if np.isscalar(exit_enthalpy):
+            return temperature_at(float(exit_enthalpy))
+        return np.array([temperature_at(float(enthalpy)) for enthalpy in exit_enthalpy])
 
     def static_temperature(self, radius: Radius, station: Station) -> Radius:  # K
         axial_velocity = self.axial_velocity(radius, station)
         tangential_velocity = self.law.tangential_velocity(radius, station)
-        kinetic_temperature = (axial_velocity**2 + tangential_velocity**2) / (2 * GAS.C_p)
-        return self.total_temperature(radius, station) - kinetic_temperature
+        kinetic_energy = (axial_velocity**2 + tangential_velocity**2) / 2
+        if station == 2:
+            total_enthalpy = AirState.from_temperature_pressure(
+                self.inlet_total_temperature,
+                self.inlet_total_pressure * BAR,
+            ).enthalpy_j_kg
+        else:
+            inlet_enthalpy = AirState.from_temperature_pressure(
+                self.inlet_total_temperature,
+                self.inlet_total_pressure * BAR,
+            ).enthalpy_j_kg
+            total_enthalpy = inlet_enthalpy - self.specific_work(radius)
+        static_enthalpy = total_enthalpy - kinetic_energy
+        static_pressure = self.mean_static_pressure[station] * BAR
+
+        def temperature_at(enthalpy: float) -> float:
+            return AirState.from_enthalpy_pressure(float(enthalpy), static_pressure).temperature_k
+
+        if np.isscalar(static_enthalpy):
+            return temperature_at(float(static_enthalpy))
+        return np.array([
+            temperature_at(float(enthalpy))
+            for enthalpy in static_enthalpy
+        ])
+
+    def _cp_at_station(self, station: Station) -> float:
+        if station == 2 and self.stator_exit_air_state is not None:
+            return self.stator_exit_air_state.cp_j_kg_k
+        if station == 3 and self.rotor_exit_air_state is not None:
+            return self.rotor_exit_air_state.cp_j_kg_k
+        return GAS.C_p
+
+    def _air_state_at_station(self, station: Station) -> AirState:
+        if station == 2 and self.stator_exit_air_state is not None:
+            return self.stator_exit_air_state
+        if station == 3 and self.rotor_exit_air_state is not None:
+            return self.rotor_exit_air_state
+        return AirState.from_temperature_pressure(
+            self.inlet_total_temperature,
+            self.inlet_total_pressure * BAR,
+        )
 
     def static_pressure(self, radius: float, station: Station) -> float:  # bar
         """Integrates dP/dr = rho V_theta^2 / r from the meanline pressure at the mean radius."""
         def log_pressure_gradient(r: float) -> float:
             tangential_velocity = self.law.tangential_velocity(r, station)
-            return tangential_velocity**2 / (GAS.R * self.static_temperature(r, station) * r)
+            air_state = self._air_state_at_station(station)
+            return tangential_velocity**2 / (
+                air_state.gas_constant_j_kg_k
+                * self.static_temperature(r, station)
+                * r
+            )
 
         integral, _ = quad(log_pressure_gradient, self.annulus[station].mean_radius, radius)
         return self.mean_static_pressure[station] * math.exp(integral)
@@ -223,7 +301,15 @@ class SpanwiseFlow:
         blade_speed = self.omega * radius
         static_temperature = float(self.static_temperature(radius, station))
         static_pressure = self.static_pressure(radius, station)
-        speed_of_sound = math.sqrt(GAS.gamma * GAS.R * static_temperature)
+        local_state = AirState.from_temperature_pressure(
+            static_temperature,
+            static_pressure * BAR,
+        )
+        speed_of_sound = math.sqrt(
+            local_state.gamma
+            * local_state.gas_constant_j_kg_k
+            * static_temperature
+        )
         return StationState(
             radius=radius,
             axial_velocity=axial_velocity,
@@ -231,9 +317,12 @@ class SpanwiseFlow:
             blade_speed=blade_speed,
             static_temperature=static_temperature,
             static_pressure=static_pressure,
-            density=static_pressure * BAR / (GAS.R * static_temperature),
+            density=local_state.density_kg_m3,
             mach=math.hypot(axial_velocity, tangential_velocity) / speed_of_sound,
             relative_mach=math.hypot(axial_velocity, tangential_velocity - blade_speed) / speed_of_sound,
+            cp_j_kg_k=local_state.cp_j_kg_k,
+            gamma=local_state.gamma,
+            viscosity_pa_s=local_state.viscosity_pa_s,
         )
 
     def at_span(self, span_fraction: float) -> SpanPosition:
@@ -272,8 +361,16 @@ def solve_radial_equilibrium(meanline: MeanlineResult, vortex_exponent: float = 
     law = VortexLaw.through_mean_swirl(vortex_exponent, annulus_2.mean_radius, mean_swirl_2,
                                        annulus_3.mean_radius, mean_swirl_3)
 
-    density_2 = meanline.P_s2 * BAR / (GAS.R * meanline.T_2)
-    density_3 = meanline.P_s3 * BAR / (GAS.R * meanline.T_3)
+    density_2 = (
+        meanline.stator_exit_air_state.density_kg_m3
+        if meanline.stator_exit_air_state is not None
+        else meanline.P_s2 * BAR / (GAS.R * meanline.T_2)
+    )
+    density_3 = (
+        meanline.rotor_exit_air_state.density_kg_m3
+        if meanline.rotor_exit_air_state is not None
+        else meanline.P_s3 * BAR / (GAS.R * meanline.T_3)
+    )
 
     def rotor_shape_adjustment(radius: Radius) -> Radius:
         return -2 * _specific_work(law, annulus_2, annulus_3, meanline.omega, radius)
@@ -292,6 +389,9 @@ def solve_radial_equilibrium(meanline: MeanlineResult, vortex_exponent: float = 
         inlet_total_temperature=meanline.T_01,
         inlet_total_pressure=meanline.P_01,
         stator_inlet_angle=meanline.alpha_1,
+        inlet_air_state=meanline.inlet_air_state,
+        stator_exit_air_state=meanline.stator_exit_air_state,
+        rotor_exit_air_state=meanline.rotor_exit_air_state,
     )
 
 

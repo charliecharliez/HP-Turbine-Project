@@ -10,7 +10,7 @@ from scipy.optimize import brentq, root_scalar
 from boundary_conditions import boundary_conditions
 from velocity_triangle import VelocityTriangle
 
-from .gas_props import GAS
+from .gas_props import AirState, GAS
 
 BAR = 1e5  # Pa
 
@@ -91,6 +91,13 @@ class MeanlineResult:
     stage_loading: float  # work_euler / u_mean^2
     flow_coefficient: float  # mean axial velocity across the rotor / u_mean
 
+    inlet_air_state: AirState | None = None
+    stator_isentropic_air_state: AirState | None = None
+    stator_exit_air_state: AirState | None = None
+    rotor_isentropic_air_state: AirState | None = None
+    rotor_exit_air_state: AirState | None = None
+    rotor_exit_stagnation_air_state: AirState | None = None
+
     def exit_state(self) -> StageInlet:
         """Rotor exit flow as the inlet of a following stage."""
         return StageInlet(T_0=self.T_03, P_0=self.P_03, m_dot=self.m_dot, alpha=self.alpha_3, mach=self.M_3)
@@ -98,7 +105,9 @@ class MeanlineResult:
 
 def subsonic_mach_number(mass_flow: float, area: float, total_temperature: float, total_pressure: float) -> float:
     """Subsonic axial Mach number passing the mass flow [kg/s] through the area [m^2]; total pressure in bar."""
-    gamma, R = GAS.gamma, GAS.R
+    inlet_state = AirState.from_temperature_pressure(total_temperature, total_pressure * BAR)
+    gamma = inlet_state.gamma
+    R = inlet_state.gas_constant_j_kg_k
     choking_exponent = -(gamma + 1) / (2 * (gamma - 1))
 
     def mass_flow_at(mach: float) -> float:
@@ -110,49 +119,101 @@ def subsonic_mach_number(mass_flow: float, area: float, total_temperature: float
 
 
 def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> MeanlineResult:
-    C_p, k, R = GAS.C_p, GAS.gamma, GAS.R
-    exponent = (k - 1) / k
     T_01, P_01, m_dot = inlet.T_0, inlet.P_0, inlet.m_dot
+    inlet_state = AirState.from_temperature_pressure(T_01, P_01 * BAR)
     P_s3 = P_01 / inputs.pressure_ratio
-    P_s2 = P_01 * (1 - (1 - inputs.degree_of_reaction) * (1 - (P_s3 / P_01) ** exponent)) ** (1 / exponent)
+    rotor_overall_isentropic = AirState.isentropic_from_temperature_pressure(
+        T_01,
+        P_01 * BAR,
+        P_s3 * BAR,
+    )
+    overall_isentropic_drop = inlet_state.enthalpy_j_kg - rotor_overall_isentropic.enthalpy_j_kg
+
+    def reaction_error(stator_pressure_bar: float) -> float:
+        stator_isentropic = AirState.isentropic_from_temperature_pressure(
+            T_01,
+            P_01 * BAR,
+            stator_pressure_bar * BAR,
+        )
+        stator_isentropic_drop = inlet_state.enthalpy_j_kg - stator_isentropic.enthalpy_j_kg
+        rotor_isentropic_drop = stator_isentropic.enthalpy_j_kg - rotor_overall_isentropic.enthalpy_j_kg
+        overall_drop = stator_isentropic_drop + rotor_isentropic_drop
+        stator_share = stator_isentropic_drop / overall_drop
+        rotor_share = rotor_isentropic_drop / overall_drop
+        return stator_share - (1 - inputs.degree_of_reaction)
+
+    P_s2 = brentq(reaction_error, P_s3, P_01)
+    stator_isentropic = AirState.isentropic_from_temperature_pressure(
+        T_01,
+        P_01 * BAR,
+        P_s2 * BAR,
+    )
 
     omega = inputs.N_shaft * 2 * math.pi / 60
     u_2 = omega * inputs.radius_2
     u_3 = omega * inputs.radius_3
 
     # Stator exit
-    T_2is = T_01 * (P_s2 / P_01) ** exponent
-    v_2 = math.sqrt((1 - inputs.loss_kinetic_stator) * 2 * C_p * (T_01 - T_2is))
-    T_2 = T_01 - v_2**2 / (2 * C_p)
+    v_2 = math.sqrt(
+        (1 - inputs.loss_kinetic_stator)
+        * 2
+        * (inlet_state.enthalpy_j_kg - stator_isentropic.enthalpy_j_kg)
+    )
+    stator_exit_enthalpy = inlet_state.enthalpy_j_kg - v_2**2 / 2
+    stator_exit = AirState.from_enthalpy_pressure(stator_exit_enthalpy, P_s2 * BAR)
+    T_2 = stator_exit.temperature_k
     alpha_2 = math.radians(inputs.alpha_2)
     v_x2 = v_2 * math.cos(alpha_2)
     v_theta_2 = v_2 * math.sin(alpha_2)
     w_2 = math.hypot(v_x2, v_theta_2 - u_2)
-    density_2 = P_s2 * BAR / (R * T_2)
+    density_2 = stator_exit.density_kg_m3
     blade_height_2 = m_dot / (density_2 * v_x2) / (2 * math.pi * inputs.radius_2)
-    speed_of_sound_2 = math.sqrt(k * R * T_2)
+    speed_of_sound_2 = math.sqrt(stator_exit.gamma * stator_exit.gas_constant_j_kg_k * T_2)
 
     # Rotor exit, with rothalpy conserved
-    T_3is = T_2 * (P_s3 / P_s2) ** exponent
-    T_03_relative = T_2 + (w_2**2 + u_3**2 - u_2**2) / (2 * C_p)
-    w_3 = math.sqrt((1 - inputs.loss_kinetic_rotor) * 2 * C_p * (T_03_relative - T_3is))
-    T_3 = T_03_relative - w_3**2 / (2 * C_p)
+    rotor_isentropic = AirState.isentropic_from_temperature_pressure(
+        T_2,
+        P_s2 * BAR,
+        P_s3 * BAR,
+    )
+    rotor_relative_enthalpy = (
+        stator_exit.enthalpy_j_kg
+        + (w_2**2 + u_3**2 - u_2**2) / 2
+    )
+    w_3 = math.sqrt(
+        (1 - inputs.loss_kinetic_rotor)
+        * 2
+        * (rotor_relative_enthalpy - rotor_isentropic.enthalpy_j_kg)
+    )
+    rotor_exit_enthalpy = rotor_relative_enthalpy - w_3**2 / 2
+    rotor_exit = AirState.from_enthalpy_pressure(rotor_exit_enthalpy, P_s3 * BAR)
+    T_3 = rotor_exit.temperature_k
     beta_3 = math.radians(inputs.beta_3)
     v_x3 = w_3 * math.cos(beta_3)
     v_theta_3 = u_3 + w_3 * math.sin(beta_3)
     v_3 = math.hypot(v_x3, v_theta_3)
-    T_03 = T_3 + v_3**2 / (2 * C_p)
-    P_03 = P_s3 * (T_03 / T_3) ** (1 / exponent)
-    density_3 = P_s3 * BAR / (R * T_3)
+    rotor_exit_stagnation_enthalpy = rotor_exit.enthalpy_j_kg + v_3**2 / 2
+    rotor_exit_stagnation = AirState.stagnation_state(
+        rotor_exit,
+        rotor_exit_stagnation_enthalpy,
+    )
+    T_03 = rotor_exit_stagnation.temperature_k
+    P_03 = rotor_exit_stagnation.pressure_pa / BAR
+    density_3 = rotor_exit.density_kg_m3
     area_3 = 2 * math.pi * inputs.radius_3 * blade_height_3
-    speed_of_sound_3 = math.sqrt(k * R * T_3)
+    speed_of_sound_3 = math.sqrt(rotor_exit.gamma * rotor_exit.gas_constant_j_kg_k * T_3)
 
     # Performance
     work_euler = u_2 * v_theta_2 - u_3 * v_theta_3
-    work_thermo = C_p * (T_01 - T_03)
+    work_thermo = inlet_state.enthalpy_j_kg - rotor_exit_stagnation.enthalpy_j_kg
     u_mean = (u_2 + u_3) / 2
-    ideal_drop_static = C_p * T_01 * (1 - (P_s3 / P_01) ** exponent)
-    ideal_drop_total = C_p * T_01 * (1 - (P_03 / P_01) ** exponent)
+    ideal_drop_static = inlet_state.enthalpy_j_kg - rotor_overall_isentropic.enthalpy_j_kg
+    ideal_isentropic_total = AirState.isentropic_from_temperature_pressure(
+        T_01,
+        P_01 * BAR,
+        P_03 * BAR,
+    )
+    ideal_drop_total = inlet_state.enthalpy_j_kg - ideal_isentropic_total.enthalpy_j_kg
 
     return MeanlineResult(
         residual=m_dot - density_3 * v_x3 * area_3,
@@ -184,6 +245,12 @@ def _solve_states(blade_height_3: float, inputs: Inputs, inlet: StageInlet) -> M
         eta_tt=work_thermo / ideal_drop_total,
         stage_loading=work_euler / u_mean**2,
         flow_coefficient=(v_x2 + v_x3) / 2 / u_mean,
+        inlet_air_state=inlet_state,
+        stator_isentropic_air_state=stator_isentropic,
+        stator_exit_air_state=stator_exit,
+        rotor_isentropic_air_state=rotor_isentropic,
+        rotor_exit_air_state=rotor_exit,
+        rotor_exit_stagnation_air_state=rotor_exit_stagnation,
     )
 
 

@@ -8,7 +8,7 @@ import numpy as np
 SRC_DIRECTORY = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIRECTORY))
 
-from Meanline.gas_props import GAS
+from Meanline.gas_props import AirState, GAS
 from Meanline.solve_meanline import solve_meanline
 from RadialEquilibrium.radial_equilibrium_solver import (
     Annulus,
@@ -88,12 +88,21 @@ class EngineeringInvariantTests(unittest.TestCase):
 
                 for radius in radii:
                     state = flow.station_state(float(radius), station)
-                    pressure_ratio = state.static_pressure / reference.static_pressure
-                    temperature_ratio = state.static_temperature / reference.static_temperature
-                    expected_pressure_ratio = temperature_ratio ** (GAS.gamma / (GAS.gamma - 1))
+                    reference_air = AirState.from_temperature_pressure(
+                        reference.static_temperature,
+                        reference.static_pressure * 1e5,
+                    )
+                    local_air = AirState.from_temperature_pressure(
+                        state.static_temperature,
+                        state.static_pressure * 1e5,
+                    )
 
                     with self.subTest(exponent=exponent, station=station, radius=radius):
-                        self.assertAlmostEqual(pressure_ratio, expected_pressure_ratio, places=8)
+                        self.assertAlmostEqual(
+                            local_air.entropy_j_kg_k,
+                            reference_air.entropy_j_kg_k,
+                            delta=5e-3,
+                        )
 
     def test_spanwise_mass_flow_matches_with_local_density_within_point_one_percent(self) -> None:
         meanline = solve_meanline()

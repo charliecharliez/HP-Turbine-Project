@@ -5,9 +5,10 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TypeVar
+from scipy.optimize import brentq
 
 from boundary_conditions import boundary_conditions
-from Meanline.gas_props import GAS
+from Meanline.gas_props import AirState, GAS
 from Meanline.solve_meanline import MeanlineResult, StageInlet
 from stage_solver import Constraint, StageDesign, StageSolution, print_constraints, print_stage_report, solve_stage
 
@@ -39,13 +40,31 @@ class TurbineDesign:
 
     def stage_exit_pressures(self) -> list[float]:  # bar
         """Static pressure after each stage once the stages up to it have taken their shares of the expansion."""
-        exponent = (GAS.gamma - 1) / GAS.gamma
-        overall_drop = 1 - self.pressure_ratio ** -exponent
+        inlet_state = AirState.from_temperature_pressure(
+            self.inlet.T_0,
+            self.inlet.P_0 * 1e5,
+        )
+        exit_state = AirState.isentropic_from_temperature_pressure(
+            self.inlet.T_0,
+            self.inlet.P_0 * 1e5,
+            self.inlet.P_0 * 1e5 / self.pressure_ratio,
+        )
+        overall_drop = inlet_state.enthalpy_j_kg - exit_state.enthalpy_j_kg
         exit_pressures = []
         cumulative_share = 0.0
         for share in self.expansion_shares:
             cumulative_share += share
-            exit_pressures.append(self.inlet.P_0 * (1 - cumulative_share * overall_drop) ** (1 / exponent))
+            target_drop = cumulative_share * overall_drop
+            target_enthalpy = inlet_state.enthalpy_j_kg - target_drop
+            lowest_pressure = exit_state.pressure_pa
+            highest_pressure = inlet_state.pressure_pa
+
+            def pressure_error(exit_pressure_pa: float) -> float:
+                isentropic_exit = AirState.isentropic_from_state(inlet_state, exit_pressure_pa)
+                return isentropic_exit.enthalpy_j_kg - target_enthalpy
+
+            exit_pressure = brentq(pressure_error, lowest_pressure, highest_pressure)
+            exit_pressures.append(exit_pressure / 1e5)
         return exit_pressures
 
 
@@ -119,11 +138,21 @@ def solve_stages_in_sequence(design: TurbineDesign, solve: Callable[[StageDesign
 def turbine_performance(inlet: StageInlet, meanlines: Sequence[MeanlineResult],
                         stage_work: Sequence[float]) -> TurbinePerformance:
     """Overall efficiencies from the turbine inlet to the last stage's exit; stage work in J/kg."""
-    exponent = (GAS.gamma - 1) / GAS.gamma
     exit_state = meanlines[-1]
     specific_work = math.fsum(stage_work)
-    ideal_work_static = GAS.C_p * inlet.T_0 * (1 - (exit_state.P_s3 / inlet.P_0) ** exponent)
-    ideal_work_total = GAS.C_p * inlet.T_0 * (1 - (exit_state.P_03 / inlet.P_0) ** exponent)
+    inlet_state = AirState.from_temperature_pressure(inlet.T_0, inlet.P_0 * 1e5)
+    ideal_static = AirState.isentropic_from_temperature_pressure(
+        inlet.T_0,
+        inlet.P_0 * 1e5,
+        exit_state.P_s3 * 1e5,
+    )
+    ideal_total = AirState.isentropic_from_temperature_pressure(
+        inlet.T_0,
+        inlet.P_0 * 1e5,
+        exit_state.P_03 * 1e5,
+    )
+    ideal_work_static = inlet_state.enthalpy_j_kg - ideal_static.enthalpy_j_kg
+    ideal_work_total = inlet_state.enthalpy_j_kg - ideal_total.enthalpy_j_kg
     return TurbinePerformance(
         specific_work=specific_work,
         total_to_total=specific_work / ideal_work_total,

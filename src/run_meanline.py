@@ -43,7 +43,7 @@ def _validate_inputs(inputs: Inputs) -> None:
         value = getattr(inputs, name)
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be a finite positive value")
-    for name in ("alpha_2", "Beta3_metal"):
+    for name in ("alpha_2", "beta_3"):
         value = getattr(inputs, name)
         if not math.isfinite(value) or not -90 < value < 90:
             raise ValueError(f"{name} must be strictly between -90 and 90 degrees")
@@ -77,8 +77,8 @@ def load_meanline_inputs(config_path: Path | None) -> Inputs:
         alpha_2=_read_number(
             configuration, "stator_exit_angle_deg", CONFIG_DEFAULTS.alpha_2
         ),
-        Beta3_metal=_read_number(
-            configuration, "rotor_exit_metal_angle_deg", CONFIG_DEFAULTS.Beta3_metal
+        beta_3=_read_number(
+            configuration, "rotor_exit_metal_angle_deg", CONFIG_DEFAULTS.beta_3
         ),
         loss_kinetic_stator=_read_number(
             configuration,
@@ -115,7 +115,7 @@ def _input_snapshot(inputs: Inputs) -> JsonObject:
         "radius_2_m": inputs.radius_2,
         "radius_3_m": inputs.radius_3,
         "stator_exit_angle_deg": inputs.alpha_2,
-        "rotor_exit_metal_angle_deg": inputs.Beta3_metal,
+        "rotor_exit_metal_angle_deg": inputs.beta_3,
         "stator_kinetic_loss_fraction": inputs.loss_kinetic_stator,
         "rotor_kinetic_loss_fraction": inputs.loss_kinetic_rotor,
     }
@@ -128,6 +128,9 @@ def _input_snapshot(inputs: Inputs) -> JsonObject:
 def _result_snapshot(
     result: MeanlineResult, hardware_limits: JsonObject | None
 ) -> JsonObject:
+    inlet_properties = result.inlet_air_state
+    stator_properties = result.stator_exit_air_state
+    rotor_properties = result.rotor_exit_air_state
     return {
         "hardware_limits": hardware_limits,
         "mass_flow_residual_kg_s": result.residual,
@@ -145,7 +148,7 @@ def _result_snapshot(
         "rotor_exit_blade_speed_m_s": result.u_3,
         "rotor_inlet_relative_mach": result.M_2rel,
         "stator_exit_absolute_mach": result.M_2,
-        "rotor_inlet_relative_flow_angle_deg_unsigned": result.Beta2,
+        "rotor_inlet_relative_flow_angle_deg": result.beta_2,
         "rotor_exit_absolute_flow_angle_deg": result.alpha_3,
         "stator_exit_blade_height_m": result.blade_height_2,
         "rotor_exit_blade_height_m": result.blade_height_3,
@@ -157,6 +160,15 @@ def _result_snapshot(
         "euler_specific_work_j_kg": result.work_euler,
         "thermodynamic_specific_work_j_kg": result.work_thermo,
         "total_to_static_efficiency": result.eta_ts,
+        "inlet_cp_j_kg_k": inlet_properties.cp_j_kg_k if inlet_properties else None,
+        "inlet_gamma": inlet_properties.gamma if inlet_properties else None,
+        "inlet_viscosity_pa_s": inlet_properties.viscosity_pa_s if inlet_properties else None,
+        "stator_exit_cp_j_kg_k": stator_properties.cp_j_kg_k if stator_properties else None,
+        "stator_exit_gamma": stator_properties.gamma if stator_properties else None,
+        "stator_exit_viscosity_pa_s": stator_properties.viscosity_pa_s if stator_properties else None,
+        "rotor_exit_cp_j_kg_k": rotor_properties.cp_j_kg_k if rotor_properties else None,
+        "rotor_exit_gamma": rotor_properties.gamma if rotor_properties else None,
+        "rotor_exit_viscosity_pa_s": rotor_properties.viscosity_pa_s if rotor_properties else None,
     }
 
 

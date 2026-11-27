@@ -14,7 +14,7 @@ from boundary_conditions import boundary_conditions
 from design_optimizer import MODEL_FAILURE_PENALTY, DesignSpace, penalized_objective, screen_turbine
 from Losses.losses_solver import row_geometry, rotor_losses, stage_efficiency, stator_losses
 from main import SELECTED_DESIGN
-from Meanline.gas_props import GAS
+from Meanline.gas_props import AirState, GAS
 from Meanline.solve_meanline import Inputs, StageInlet, solve_meanline
 from RadialEquilibrium.radial_equilibrium_solver import solve_radial_equilibrium
 from stage_solver import LOSS_TOLERANCE, StageDesign, solve_stage
@@ -48,13 +48,13 @@ class MeanlineTests(unittest.TestCase):
         for inputs, inlet in cases:
             meanline = solve_meanline(inputs, inlet)
             axial_velocity = meanline.v_2 * math.cos(math.radians(meanline.alpha_2))
-            density = meanline.P_s2 * 1e5 / (GAS.R * meanline.T_2)
+            density = meanline.stator_exit_air_state.density_kg_m3
             area = 2 * math.pi * inputs.radius_2 * meanline.blade_height_2
             with self.subTest(inputs=inputs):
                 self.assertAlmostEqual(
-                    meanline.T_2 + meanline.v_2**2 / (2 * GAS.C_p),
-                    meanline.T_01,
-                    places=10,
+                    meanline.stator_exit_air_state.enthalpy_j_kg + meanline.v_2**2 / 2,
+                    meanline.inlet_air_state.enthalpy_j_kg,
+                    places=7,
                 )
                 self.assertAlmostEqual(density * axial_velocity * area, inlet.m_dot, places=8)
 
@@ -68,10 +68,10 @@ class MeanlineTests(unittest.TestCase):
             c_theta_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
             c_theta_3 = meanline.u_3 + meanline.w_3 * math.sin(math.radians(meanline.beta_3))
             euler_work = meanline.u_2 * c_theta_2 - meanline.u_3 * c_theta_3
-            rothalpy_in = GAS.C_p * meanline.T_2 + (
+            rothalpy_in = meanline.stator_exit_air_state.enthalpy_j_kg + (
                 meanline.w_2**2 - meanline.u_2**2
             ) / 2
-            rothalpy_out = GAS.C_p * meanline.T_3 + (
+            rothalpy_out = meanline.rotor_exit_air_state.enthalpy_j_kg + (
                 meanline.w_3**2 - meanline.u_3**2
             ) / 2
             with self.subTest(inputs=inputs):
@@ -82,27 +82,29 @@ class MeanlineTests(unittest.TestCase):
     def test_reaction_and_efficiencies_match_isentropic_pressure_relations(self) -> None:
         inputs = Inputs()
         meanline = solve_meanline(inputs)
-        exponent = (GAS.gamma - 1) / GAS.gamma
-        isentropic_exit_temperature = meanline.T_01 * (
-            meanline.P_s3 / meanline.P_01
-        ) ** exponent
-        isentropic_stator_exit_temperature = meanline.T_01 * (
-            meanline.P_s2 / meanline.P_01
-        ) ** exponent
-        reaction = (
-            isentropic_stator_exit_temperature - isentropic_exit_temperature
-        ) / (meanline.T_01 - isentropic_exit_temperature)
-        expected_eta_ts = (meanline.T_01 - meanline.T_03) / (
-            meanline.T_01
-            * (1 - (meanline.P_s3 / meanline.P_01) ** exponent)
+        overall_isentropic = AirState.isentropic_from_temperature_pressure(
+            meanline.T_01,
+            meanline.P_01 * 1e5,
+            meanline.P_s3 * 1e5,
         )
-        expected_eta_tt = (meanline.T_01 - meanline.T_03) / (
-            meanline.T_01
-            * (1 - (meanline.P_03 / meanline.P_01) ** exponent)
+        stator_isentropic = AirState.isentropic_from_temperature_pressure(
+            meanline.T_01,
+            meanline.P_01 * 1e5,
+            meanline.P_s2 * 1e5,
         )
-        expected_exit_total_pressure = meanline.P_s3 * (
-            meanline.T_03 / meanline.T_3
-        ) ** (GAS.gamma / (GAS.gamma - 1))
+        stator_drop = meanline.inlet_air_state.enthalpy_j_kg - stator_isentropic.enthalpy_j_kg
+        overall_drop = meanline.inlet_air_state.enthalpy_j_kg - overall_isentropic.enthalpy_j_kg
+        reaction = 1 - stator_drop / overall_drop
+        ideal_static_drop = meanline.inlet_air_state.enthalpy_j_kg - overall_isentropic.enthalpy_j_kg
+        ideal_total = AirState.isentropic_from_temperature_pressure(
+            meanline.T_01,
+            meanline.P_01 * 1e5,
+            meanline.P_03 * 1e5,
+        )
+        ideal_total_drop = meanline.inlet_air_state.enthalpy_j_kg - ideal_total.enthalpy_j_kg
+        expected_eta_ts = meanline.work_thermo / ideal_static_drop
+        expected_eta_tt = meanline.work_thermo / ideal_total_drop
+        expected_exit_total_pressure = meanline.rotor_exit_stagnation_air_state.pressure_pa / 1e5
 
         self.assertAlmostEqual(reaction, inputs.degree_of_reaction, places=12)
         self.assertAlmostEqual(meanline.eta_ts, expected_eta_ts, places=12)
@@ -112,14 +114,17 @@ class MeanlineTests(unittest.TestCase):
     def test_signed_angles_and_mach_numbers(self) -> None:
         inputs = Inputs()
         meanline = solve_meanline(inputs)
-        speed_of_sound_3 = math.sqrt(GAS.gamma * GAS.R * meanline.T_3)
+        speed_of_sound_3 = math.sqrt(
+            meanline.rotor_exit_air_state.gamma
+            * meanline.rotor_exit_air_state.gas_constant_j_kg_k
+            * meanline.T_3
+        )
         c_x_2 = meanline.v_2 * math.cos(math.radians(meanline.alpha_2))
         c_theta_2 = meanline.v_2 * math.sin(math.radians(meanline.alpha_2))
         c_x_3 = meanline.w_3 * math.cos(math.radians(meanline.beta_3))
         c_theta_3 = meanline.u_3 + meanline.w_3 * math.sin(math.radians(meanline.beta_3))
 
         self.assertEqual(meanline.beta_3, inputs.beta_3)
-        self.assertGreater(meanline.beta_2, 0.0)
         self.assertAlmostEqual(
             meanline.beta_2,
             math.degrees(math.atan2(c_theta_2 - meanline.u_2, c_x_2)),

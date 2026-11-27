@@ -376,7 +376,11 @@ def row_geometry(airfoil: AirfoilParams, meanline: MeanlineResult, height: float
 
 def stator_losses(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRFOIL) -> RowLoss:
     """Kacker-Okapuu loss of the stator, from the stage inlet state to the stator exit."""
-    exit_density = static_density(meanline.P_s2, meanline.T_2)
+    exit_density = (
+        meanline.stator_exit_air_state.density_kg_m3
+        if meanline.stator_exit_air_state is not None
+        else static_density(meanline.P_s2, meanline.T_2)
+    )
 
     geometry = row_geometry(
         airfoil,
@@ -393,17 +397,32 @@ def stator_losses(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRF
         exit_angle=meanline.alpha_2,
         inlet_mach=meanline.M_1,
         exit_mach=meanline.M_2,
-        inlet_static_pressure=meanline.P_01 / stagnation_pressure_ratio(meanline.M_1, GAS.gamma),
+        inlet_static_pressure=meanline.P_01 / stagnation_pressure_ratio(
+            meanline.M_1,
+            meanline.inlet_air_state.gamma if meanline.inlet_air_state is not None else GAS.gamma,
+        ),
         exit_static_pressure=meanline.P_s2,
-        reynolds=exit_density * meanline.v_2 * geometry.chord / GAS.mu,
-        gamma=GAS.gamma,
+        reynolds=exit_density * meanline.v_2 * geometry.chord / (
+            meanline.stator_exit_air_state.viscosity_pa_s
+            if meanline.stator_exit_air_state is not None
+            else GAS.mu
+        ),
+        gamma=(
+            meanline.stator_exit_air_state.gamma
+            if meanline.stator_exit_air_state is not None
+            else GAS.gamma
+        ),
     )
     return row_loss(geometry, flow)
 
 
 def rotor_losses(meanline: MeanlineResult, airfoil: AirfoilParams = ROTOR_AIRFOIL) -> RowLoss:
     """Kacker-Okapuu loss of the rotor, in the relative frame."""
-    exit_density = static_density(meanline.P_s3, meanline.T_3)
+    exit_density = (
+        meanline.rotor_exit_air_state.density_kg_m3
+        if meanline.rotor_exit_air_state is not None
+        else static_density(meanline.P_s3, meanline.T_3)
+    )
 
     geometry = row_geometry(
         airfoil,
@@ -423,8 +442,16 @@ def rotor_losses(meanline: MeanlineResult, airfoil: AirfoilParams = ROTOR_AIRFOI
         exit_mach=meanline.M_3rel,
         inlet_static_pressure=meanline.P_s2,
         exit_static_pressure=meanline.P_s3,
-        reynolds=exit_density * meanline.w_3 * geometry.chord / GAS.mu,
-        gamma=GAS.gamma,
+        reynolds=exit_density * meanline.w_3 * geometry.chord / (
+            meanline.rotor_exit_air_state.viscosity_pa_s
+            if meanline.rotor_exit_air_state is not None
+            else GAS.mu
+        ),
+        gamma=(
+            meanline.rotor_exit_air_state.gamma
+            if meanline.rotor_exit_air_state is not None
+            else GAS.gamma
+        ),
     )
     return row_loss(geometry, flow)
 
