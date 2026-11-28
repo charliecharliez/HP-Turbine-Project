@@ -148,6 +148,29 @@ class TurbineReportingTests(unittest.TestCase):
             )
             self.assertIn("hub_radius_m", json_stations[0]["annulus"])
             self.assertIn("mach", json_stations[0]["absolute_velocity"])
+            transonic = payload["stages"][0]["transonic_assessment"]
+            self.assertEqual(
+                [span["span_location"] for span in transonic["spans"]],
+                ["hub", "midspan", "tip"],
+            )
+            self.assertEqual(
+                len(transonic["spans"][0]["mach_values"]),
+                4,
+            )
+            self.assertEqual(
+                transonic["spans"][0]["stator_proxy"]["source"],
+                "preliminary_spanwise_proxy",
+            )
+            stator_loss = payload["stages"][0]["stator_loss"]
+            rotor_loss = payload["stages"][0]["rotor_loss"]
+            self.assertEqual(stator_loss["coolant_mixing_status"], "deferred")
+            self.assertIn("profile_base", stator_loss["pressure_loss_components"])
+            self.assertIn("supersonic_increment", rotor_loss["pressure_loss_components"])
+            self.assertAlmostEqual(
+                stator_loss["accounting_residual"],
+                0.0,
+                places=12,
+            )
             self.assertIn("mach", json_stations[0]["relative_velocity"])
 
             with csv_path.open(encoding="utf-8", newline="") as csv_file:

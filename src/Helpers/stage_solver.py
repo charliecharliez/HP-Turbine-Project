@@ -9,7 +9,7 @@ from Pipeline.Airfoil.airfoil import (ROTOR_DESIGN, STATOR_DESIGN, BladeRow, Bla
                              stator_row)
 from Constraints.boundary_conditions import boundary_conditions
 from Pipeline.Losses.losses_solver import (RowLoss, StageEfficiency, print_breakdown, rotor_losses, stage_efficiency,
-                                  stator_losses)
+                                  stator_losses, TransonicAssessment, assess_transonic, print_transonic_assessment)
 from Pipeline.Meanline.solve_meanline import Inputs, MeanlineResult, StageInlet, solve_meanline
 from Pipeline.RadialEquilibrium.radial_equilibrium_solver import (FREE_VORTEX, SpanwiseFlow, print_spanwise_table,
                                                          solve_radial_equilibrium)
@@ -29,6 +29,7 @@ MAX_PASSES = 50
 class StageDesign:
     """Every design choice of one stage; the loss coefficients in inputs are only the first guess."""
 
+    stage_index: int = 1
     inputs: Inputs = field(default_factory=Inputs)
     inlet: StageInlet = field(default_factory=StageInlet)
     vortex_exponent: float = FREE_VORTEX
@@ -37,6 +38,8 @@ class StageDesign:
     exit_flow_limits: ExitFlowLimits = field(default_factory=ExitFlowLimits)
 
     def __post_init__(self) -> None:
+        if isinstance(self.stage_index, bool) or not isinstance(self.stage_index, int) or self.stage_index < 1:
+            raise ValueError(f"stage_index must be a positive integer, got {self.stage_index}")
         if not isinstance(self.exit_flow_limits, ExitFlowLimits):
             raise ValueError("exit_flow_limits must be an ExitFlowLimits instance")
 
@@ -52,6 +55,7 @@ class StageEvaluation:
     rotor: BladeRow
     stator_loss: RowLoss
     rotor_loss: RowLoss
+    transonic_assessment: TransonicAssessment
 
     @property
     def loss_change(self) -> float:
@@ -138,8 +142,15 @@ def evaluate_stage(inputs: Inputs, design: StageDesign) -> StageEvaluation:
         spanwise_flow=spanwise_flow,
         stator=stator,
         rotor=rotor,
-        stator_loss=stator_losses(meanline, stator.airfoil_params()),
-        rotor_loss=rotor_losses(meanline, rotor.airfoil_params()),
+        stator_loss=stator_losses(meanline, stator.airfoil_params(), design.stage_index),
+        rotor_loss=rotor_losses(meanline, rotor.airfoil_params(), design.stage_index),
+        transonic_assessment=assess_transonic(
+            meanline,
+            spanwise_flow,
+            stator.airfoil_params(),
+            rotor.airfoil_params(),
+            design.stage_index,
+        ),
     )
 
 
@@ -253,6 +264,8 @@ def print_stage_report(solution: StageSolution) -> None:
     print_breakdown([solution.final.stator_loss, solution.final.rotor_loss])
     print()
     print_spanwise_table(solution.final.spanwise_flow)
+    print()
+    print_transonic_assessment(solution.final.transonic_assessment)
     print()
     print_blade_row(solution.final.stator)
     print()

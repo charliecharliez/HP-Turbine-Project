@@ -64,6 +64,11 @@ python src/Runner/main.py --config config/single-stage.json
 python src/Runner/main.py --config config/two-stage.json
 ```
 
+Optimization objective mode is an explicit run-start choice. Use
+`efficiency` for maximum total-to-static efficiency, `power` for maximum
+power output, or `pareto` for the efficiency-power Pareto frontier. The
+selected mode and stage count are retained in the optimizer run record.
+
 The default output directories are `runs/one-stage/` and `runs/two-stage/`, so the two designs can be inspected together without overwriting each other's files. Rerunning the same stage count replaces that folder's current reports. Pass `--output-directory` to choose another folder.
 
 Each schema-version-2 `turbine_report.json` records overall power, work, efficiencies, stage loading, expansion/work shares, row geometry, convergence, and per-stage/rig constraint results along with station-level geometry and velocity triangles. `turbine_report.csv` has one row per stage-qualified station. Infeasible results are still written and return a nonzero process status. Compare designs using the same inlet conditions and review each run's feasibility before comparing performance. More stages add stator and rotor rows and may affect mass and flow-path length, but the model does not calculate total mass or axial length. The program does not choose between the runs; cooling and metal-temperature feasibility are not assessed.

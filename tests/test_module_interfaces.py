@@ -1,5 +1,7 @@
+import json
 import math
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from io import StringIO
@@ -13,10 +15,33 @@ sys.path.insert(0, str(SRC_DIRECTORY))
 
 from Pipeline.Airfoil.airfoil import rotor_row, stator_row
 from Constraints.boundary_conditions import boundary_conditions
-from Helpers.design_optimizer import MODEL_FAILURE_PENALTY, DesignSpace, penalized_objective, screen_turbine
+from Helpers.design_optimizer import (
+    CandidateStatus,
+    export_final_selection_record,
+    MODEL_FAILURE_PENALTY,
+    DesignSpace,
+    OptimizerCandidate,
+    final_selection_record,
+    export_optimizer_run_record,
+    MultiModeOptimizationResult,
+    pareto_frontier,
+    penalized_objective,
+    select_final_candidate,
+    screen_turbine,
+)
 from Helpers.design_space import ExitFlowLimits, VariableBounds
 from Helpers.design_sweep import SweepGrid
-from Pipeline.Losses.losses_solver import row_geometry, rotor_losses, stage_efficiency, stator_losses
+from Pipeline.Losses.losses_solver import (
+    RowFlow,
+    assess_transonic,
+    classify_mach,
+    rotor_losses,
+    rotor_row_inputs,
+    row_geometry,
+    stage_efficiency,
+    stator_losses,
+    stator_row_inputs,
+)
 from Runner.main import SELECTED_DESIGN
 from Pipeline.Meanline.gas_props import AirState, GAS
 from Pipeline.Meanline.solve_meanline import Inputs, StageInlet, solve_meanline
@@ -189,6 +214,116 @@ class MeanlineTests(unittest.TestCase):
 
 
 class InterfaceTests(unittest.TestCase):
+    def test_transonic_threshold_and_span_assessment_are_explicit(self) -> None:
+        self.assertEqual(classify_mach(0.899), "subsonic")
+        self.assertEqual(classify_mach(0.900), "transonic")
+        self.assertEqual(classify_mach(1.000), "transonic")
+        self.assertEqual(classify_mach(1.001), "supersonic")
+
+        meanline = solve_meanline()
+        spanwise = solve_radial_equilibrium(meanline)
+        stator = stator_row(spanwise)
+        rotor = rotor_row(spanwise)
+        assessment = assess_transonic(
+            meanline,
+            spanwise,
+            stator.airfoil_params(),
+            rotor.airfoil_params(),
+            stage_index=2,
+        )
+
+        self.assertEqual(assessment.stage_index, 2)
+        self.assertEqual(
+            tuple(span.span_location for span in assessment.spans),
+            ("hub", "midspan", "tip"),
+        )
+        self.assertEqual(
+            tuple(span.span_fraction for span in assessment.spans),
+            (0.0, 0.5, 1.0),
+        )
+        for span in assessment.spans:
+            mach_by_frame = {
+                (mach.station_id, mach.frame): mach.mach
+                for mach in span.mach_values
+            }
+            span_flow = {
+                "hub": spanwise.hub,
+                "midspan": spanwise.midspan,
+                "tip": spanwise.tip,
+            }[span.span_location]
+            self.assertAlmostEqual(
+                mach_by_frame["(2, 2)", "absolute"],
+                span_flow.stator_exit.mach,
+            )
+            self.assertAlmostEqual(
+                mach_by_frame["(2, 2)", "rotor_relative"],
+                span_flow.stator_exit.relative_mach,
+            )
+            self.assertAlmostEqual(
+                mach_by_frame["(2, 3)", "absolute"],
+                span_flow.rotor_exit.mach,
+            )
+            self.assertAlmostEqual(
+                mach_by_frame["(2, 3)", "rotor_relative"],
+                span_flow.rotor_exit.relative_mach,
+            )
+            self.assertAlmostEqual(span.stator_proxy.loss.accounting_residual, 0.0, places=12)
+            self.assertAlmostEqual(span.rotor_proxy.loss.accounting_residual, 0.0, places=12)
+
+    def test_row_loss_adapters_preserve_frame_and_midspan_identity(self) -> None:
+        meanline = solve_meanline()
+        spanwise = solve_radial_equilibrium(meanline)
+        stator = stator_row(spanwise)
+        rotor = rotor_row(spanwise)
+
+        stator_inputs = stator_row_inputs(meanline, stator.airfoil_params(), stage_index=2)
+        rotor_inputs = rotor_row_inputs(meanline, rotor.airfoil_params(), stage_index=2)
+
+        self.assertEqual(stator_inputs.stage_index, 2)
+        self.assertEqual(stator_inputs.row_kind, "stator")
+        self.assertEqual(stator_inputs.reference_frame, "absolute")
+        self.assertEqual(stator_inputs.span_location, "midspan")
+        self.assertAlmostEqual(stator_inputs.flow.inlet_angle, meanline.alpha_1)
+        self.assertAlmostEqual(stator_inputs.flow.exit_angle, meanline.alpha_2)
+        self.assertAlmostEqual(stator_inputs.flow.inlet_mach, meanline.M_1)
+        self.assertAlmostEqual(stator_inputs.flow.exit_mach, meanline.M_2)
+
+        self.assertEqual(rotor_inputs.stage_index, 2)
+        self.assertEqual(rotor_inputs.row_kind, "rotor")
+        self.assertEqual(rotor_inputs.reference_frame, "rotor_relative")
+        self.assertEqual(rotor_inputs.span_location, "midspan")
+        self.assertAlmostEqual(rotor_inputs.flow.inlet_angle, meanline.beta_2)
+        self.assertAlmostEqual(rotor_inputs.flow.exit_angle, meanline.beta_3)
+        self.assertAlmostEqual(rotor_inputs.flow.inlet_mach, meanline.M_2rel)
+        self.assertAlmostEqual(rotor_inputs.flow.exit_mach, meanline.M_3rel)
+
+    def test_row_loss_adapters_require_positive_reynolds_and_mach(self) -> None:
+        meanline = solve_meanline()
+        spanwise = solve_radial_equilibrium(meanline)
+        stator_inputs = stator_row_inputs(meanline, stator_row(spanwise).airfoil_params())
+
+        for field_name, invalid_value in (
+            ("reynolds", 0.0),
+            ("exit_mach", 0.0),
+            ("exit_static_pressure", 0.0),
+            ("gamma", 1.0),
+        ):
+            with self.subTest(field_name=field_name):
+                with self.assertRaises(ValueError):
+                    values = {
+                        "kind": stator_inputs.flow.kind,
+                        "inlet_angle": stator_inputs.flow.inlet_angle,
+                        "exit_angle": stator_inputs.flow.exit_angle,
+                        "inlet_mach": stator_inputs.flow.inlet_mach,
+                        "exit_mach": stator_inputs.flow.exit_mach,
+                        "inlet_static_pressure": stator_inputs.flow.inlet_static_pressure,
+                        "exit_static_pressure": stator_inputs.flow.exit_static_pressure,
+                        "reynolds": stator_inputs.flow.reynolds,
+                        "gamma": stator_inputs.flow.gamma,
+                    }
+                    values[field_name] = invalid_value
+                    RowFlow(**values)
+
     def test_free_vortex_midspan_reproduces_a_downstream_stage(self) -> None:
         meanline = solve_meanline(DOWNSTREAM_INPUTS, DOWNSTREAM_INLET)
         midspan = solve_radial_equilibrium(meanline).midspan
@@ -538,6 +673,159 @@ class OptimizerTests(unittest.TestCase):
 
         self.assertFalse(screened.feasible)
         self.assertTrue(screened.error)
+
+    def test_pareto_frontier_keeps_nondominated_efficiency_power_candidates(self) -> None:
+        candidates = (
+            OptimizerCandidate("a", 1, CandidateStatus.FEASIBLE, 0.90, 30_000_000.0, None, (1.0,)),
+            OptimizerCandidate("b", 1, CandidateStatus.FEASIBLE, 0.88, 31_000_000.0, None, (2.0,)),
+            OptimizerCandidate("c", 2, CandidateStatus.FEASIBLE, 0.85, 32_000_000.0, None, (3.0,)),
+            OptimizerCandidate("d", 1, CandidateStatus.INFEASIBLE, 0.95, 33_000_000.0, None, (4.0,)),
+        )
+
+        frontier = pareto_frontier(candidates)
+
+        self.assertEqual(tuple(candidate.candidate_id for candidate in frontier), ("a", "b", "c"))
+
+    def test_optimizer_candidate_status_and_cfd_status_are_explicit(self) -> None:
+        candidate = OptimizerCandidate(
+            "one-stage-1",
+            1,
+            CandidateStatus.FAILED,
+            math.nan,
+            math.nan,
+            None,
+            (1.0,),
+            error="model failure",
+        )
+
+        self.assertEqual(candidate.status, CandidateStatus.FAILED)
+        self.assertEqual(candidate.cfd_status, "not_requested")
+
+    def test_final_selection_uses_each_run_start_objective_mode(self) -> None:
+        candidates = (
+            OptimizerCandidate(
+                "one-eff",
+                1,
+                CandidateStatus.FEASIBLE,
+                0.90,
+                30_000_000.0,
+                None,
+                (1.0,),
+                converged=True,
+            ),
+            OptimizerCandidate(
+                "one-power",
+                1,
+                CandidateStatus.FEASIBLE,
+                0.88,
+                32_000_000.0,
+                None,
+                (2.0,),
+                converged=True,
+            ),
+        )
+
+        efficiency_selection = select_final_candidate(candidates, "efficiency", stage_count=1)
+        power_selection = select_final_candidate(candidates, "power", stage_count=1)
+        pareto_selection = select_final_candidate(candidates, "pareto", stage_count=1)
+
+        self.assertEqual(efficiency_selection.candidate.candidate_id, "one-eff")
+        self.assertEqual(power_selection.candidate.candidate_id, "one-power")
+        self.assertIn(pareto_selection.candidate.candidate_id, ("one-eff", "one-power"))
+        self.assertEqual(efficiency_selection.validation_status, "provisional_meanline")
+        self.assertEqual(efficiency_selection.cfd_status, "not_requested")
+
+    def test_final_selection_rejects_unverified_or_infeasible_candidates(self) -> None:
+        infeasible = OptimizerCandidate(
+            "infeasible",
+            1,
+            CandidateStatus.INFEASIBLE,
+            0.95,
+            33_000_000.0,
+            None,
+            (1.0,),
+            converged=True,
+        )
+        nonconverged = OptimizerCandidate(
+            "nonconverged",
+            2,
+            CandidateStatus.NON_CONVERGED,
+            0.94,
+            32_000_000.0,
+            None,
+            (2.0,),
+            converged=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "no feasible converged candidate"):
+            select_final_candidate((infeasible, nonconverged), "efficiency")
+
+    def test_final_selection_export_marks_cfd_pending_and_lists_alternatives(self) -> None:
+        candidates = (
+            OptimizerCandidate(
+                "one",
+                1,
+                CandidateStatus.FEASIBLE,
+                0.90,
+                30_000_000.0,
+                None,
+                (1.0,),
+                converged=True,
+            ),
+            OptimizerCandidate(
+                "two",
+                2,
+                CandidateStatus.FEASIBLE,
+                0.89,
+                31_000_000.0,
+                None,
+                (2.0,),
+                converged=True,
+            ),
+        )
+        selection = select_final_candidate(candidates, "power")
+
+        record = final_selection_record(selection)
+        self.assertEqual(record["validation_status"], "provisional_meanline")
+        self.assertEqual(record["cfd_status"], "not_requested")
+        self.assertEqual(record["selected_candidate"]["candidate_id"], "two")
+        self.assertEqual(len(record["alternative_candidates"]), 1)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = export_final_selection_record(
+                selection,
+                f"{temporary_directory}/final-selection.json",
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        self.assertIn("Cooling and metal-temperature feasibility", payload["limitations"][1])
+
+    def test_optimizer_run_record_exports_modes_candidates_and_cfd_boundary(self) -> None:
+        candidate = OptimizerCandidate(
+            "two-stage-1",
+            2,
+            CandidateStatus.FEASIBLE,
+            0.90,
+            30_000_000.0,
+            None,
+            (1.0,),
+        )
+        result = MultiModeOptimizationResult(
+            efficiency=(),
+            power=(),
+            pareto=(candidate,),
+            candidates=(candidate,),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = export_optimizer_run_record(
+                result,
+                f"{temporary_directory}/optimizer.json",
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["modes"], ["efficiency", "power", "pareto"])
+        self.assertEqual(payload["cfd_status"], "preparation_only")
+        self.assertEqual(payload["candidates"][0]["status"], "feasible")
 
     def test_unusable_expansion_shares_get_the_failure_penalty(self) -> None:
         space = DesignSpace(2)

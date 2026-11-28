@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import math
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Literal
+from pathlib import Path
 
 import numpy as np
 from scipy.optimize import differential_evolution
@@ -32,6 +36,29 @@ MAX_GENERATIONS = 300
 CONVERGENCE_TOLERANCE = 1e-4
 CANDIDATES_TO_VERIFY = 6
 FIRST_GUESS = Inputs(loss_kinetic_stator=0.08, loss_kinetic_rotor=0.10)
+OptimizationMode = Literal["efficiency", "power", "pareto"]
+
+
+class CandidateStatus(str, Enum):
+    FEASIBLE = "feasible"
+    INFEASIBLE = "infeasible"
+    FAILED = "failed"
+    NON_CONVERGED = "non_converged"
+
+
+@dataclass(frozen=True)
+class OptimizerCandidate:
+    candidate_id: str
+    stage_count: int
+    status: CandidateStatus
+    efficiency: float
+    power_w: float
+    design: TurbineDesign | None
+    variables: tuple[float, ...]
+    constraints: tuple[Constraint, ...] = ()
+    converged: bool | None = None
+    error: str = ""
+    cfd_status: str = "not_requested"
 
 
 @dataclass(frozen=True)
@@ -225,8 +252,22 @@ def constraint_violation(constraint: Constraint) -> float:
     return max(0.0, excess) / max(abs(constraint.limit), 1.0)
 
 
-def penalized_objective(variables: np.ndarray, space: DesignSpace) -> float:
-    """Negative screened eta_ts for feasible designs; penalties above zero otherwise."""
+def screened_objective(screened: ScreenedTurbine, mode: OptimizationMode) -> float:
+    if screened.performance is None:
+        raise ValueError("screened performance is unavailable")
+    if mode == "efficiency":
+        return screened.performance.total_to_static
+    if mode == "power":
+        return screened.performance.power_w
+    raise ValueError(f"unsupported differential-evolution mode: {mode}")
+
+
+def penalized_objective(
+    variables: np.ndarray,
+    space: DesignSpace,
+    mode: OptimizationMode = "efficiency",
+) -> float:
+    """Negative screened objective for feasible designs; penalties above zero otherwise."""
     try:
         design = space.decode(variables)
     except ValueError:
@@ -237,7 +278,7 @@ def penalized_objective(variables: np.ndarray, space: DesignSpace) -> float:
     violation = math.fsum(constraint_violation(constraint) for constraint in screened.constraints)
     if violation > 0:
         return INFEASIBLE_OFFSET + violation
-    return -screened.performance.total_to_static
+    return -screened_objective(screened, mode)
 
 
 @dataclass(frozen=True)
@@ -249,6 +290,8 @@ class OptimizationResult:
     verified: tuple[TurbineSolution, ...]  # full-loop solutions of the best distinct screened-feasible designs
     verification_errors: tuple[tuple[TurbineDesign, str], ...]
     screened_efficiency: dict[tuple[float, ...], float]  # screened eta_ts of each verified design, by design key
+    mode: OptimizationMode = "efficiency"
+    candidates: tuple[OptimizerCandidate, ...] = ()
 
     @property
     def selected(self) -> TurbineSolution | None:
@@ -273,11 +316,18 @@ def best_distinct_designs(space: DesignSpace, population: np.ndarray, energies: 
     return designs
 
 
-def optimize_turbine(space: DesignSpace, seed: int = 1, workers: int = 1,
-                     max_generations: int = MAX_GENERATIONS) -> OptimizationResult:
-    """Maximize screened eta_ts by differential evolution, then verify the best designs with the full loop."""
+def optimize_turbine(
+    space: DesignSpace,
+    mode: OptimizationMode,
+    seed: int = 1,
+    workers: int = 1,
+    max_generations: int = MAX_GENERATIONS,
+) -> OptimizationResult:
+    """Optimize one objective by differential evolution, then verify the best distinct designs."""
+    if mode not in ("efficiency", "power"):
+        raise ValueError("differential-evolution mode must be 'efficiency' or 'power'")
     search = differential_evolution(
-        penalized_objective, space.scipy_bounds(), args=(space,), seed=seed, workers=workers,
+        penalized_objective, space.scipy_bounds(), args=(space, mode), seed=seed, workers=workers,
         updating="deferred", popsize=POPULATION_SIZE, maxiter=max_generations, tol=CONVERGENCE_TOLERANCE,
         polish=False,
     )
@@ -285,15 +335,357 @@ def optimize_turbine(space: DesignSpace, seed: int = 1, workers: int = 1,
     verified: list[TurbineSolution] = []
     verification_errors: list[tuple[TurbineDesign, str]] = []
     screened_efficiency: dict[tuple[float, ...], float] = {}
+    candidates: list[OptimizerCandidate] = []
+    for index, variables in enumerate(search.population):
+        try:
+            design = space.decode(variables)
+            screened = screen_turbine(design)
+            if screened.error:
+                status = CandidateStatus.FAILED
+                efficiency = math.nan
+                power_w = math.nan
+            elif screened.performance is None:
+                status = CandidateStatus.FAILED
+                efficiency = math.nan
+                power_w = math.nan
+            elif not screened.feasible:
+                status = CandidateStatus.INFEASIBLE
+                efficiency = screened.performance.total_to_static
+                power_w = screened.performance.power_w
+            else:
+                status = CandidateStatus.FEASIBLE
+                efficiency = screened.performance.total_to_static
+                power_w = screened.performance.power_w
+            candidates.append(OptimizerCandidate(
+                candidate_id=f"{space.stage_count}-{index + 1}",
+                stage_count=space.stage_count,
+                status=status,
+                efficiency=efficiency,
+                power_w=power_w,
+                design=design,
+                variables=tuple(float(value) for value in variables),
+                constraints=screened.constraints,
+                error=screened.error,
+            ))
+        except (ValueError, ArithmeticError) as error:
+            candidates.append(OptimizerCandidate(
+                candidate_id=f"{space.stage_count}-{index + 1}",
+                stage_count=space.stage_count,
+                status=CandidateStatus.FAILED,
+                efficiency=math.nan,
+                power_w=math.nan,
+                design=None,
+                variables=tuple(float(value) for value in variables),
+                error=f"{type(error).__name__}: {error}",
+            ))
     for design, efficiency in best_distinct_designs(space, search.population, search.population_energies,
                                                     CANDIDATES_TO_VERIFY):
         screened_efficiency[design_key(design)] = efficiency
         try:
-            verified.append(solve_turbine(design))
+            solution = solve_turbine(design)
+            verified.append(solution)
         except MODEL_ERRORS as error:
             verification_errors.append((design, f"{type(error).__name__}: {error}"))
-    return OptimizationResult(space, search.nfev, search.nit, search.message, tuple(verified),
-                              tuple(verification_errors), screened_efficiency)
+    candidates_by_key = {
+        design_key(candidate.design): candidate
+        for candidate in candidates
+        if candidate.design is not None
+    }
+    for solution in verified:
+        key = design_key(solution.design)
+        candidate = candidates_by_key.get(key)
+        if candidate is not None:
+            status = CandidateStatus.NON_CONVERGED if not solution.converged else (
+                CandidateStatus.FEASIBLE if solution.feasible else CandidateStatus.INFEASIBLE
+            )
+            updated = replace(
+                candidate,
+                status=status,
+                efficiency=solution.performance.total_to_static,
+                power_w=solution.performance.power_w,
+                constraints=solution.constraints,
+                converged=solution.converged,
+            )
+            candidates_by_key[key] = updated
+    for design, error in verification_errors:
+        key = design_key(design)
+        candidate = candidates_by_key.get(key)
+        if candidate is not None:
+            candidates_by_key[key] = replace(
+                candidate,
+                status=CandidateStatus.FAILED,
+                converged=None,
+                error=error,
+            )
+    candidates = [
+        candidates_by_key.get(design_key(candidate.design), candidate)
+        for candidate in candidates
+        if candidate.design is not None
+    ] + [
+        candidate
+        for candidate in candidates
+        if candidate.design is None
+    ]
+    return OptimizationResult(
+        space,
+        search.nfev,
+        search.nit,
+        search.message,
+        tuple(verified),
+        tuple(verification_errors),
+        screened_efficiency,
+        mode,
+        tuple(candidates),
+    )
+
+
+def pareto_frontier(candidates: Sequence[OptimizerCandidate]) -> tuple[OptimizerCandidate, ...]:
+    """Return feasible nondominated candidates that maximize efficiency and power."""
+    feasible = [
+        candidate
+        for candidate in candidates
+        if candidate.status == CandidateStatus.FEASIBLE
+        and math.isfinite(candidate.efficiency)
+        and math.isfinite(candidate.power_w)
+    ]
+    frontier = []
+    for candidate in feasible:
+        dominated = any(
+            other.efficiency >= candidate.efficiency
+            and other.power_w >= candidate.power_w
+            and (
+                other.efficiency > candidate.efficiency
+                or other.power_w > candidate.power_w
+            )
+            for other in feasible
+        )
+        if not dominated:
+            frontier.append(candidate)
+    return tuple(sorted(
+        frontier,
+        key=lambda candidate: (-candidate.efficiency, -candidate.power_w),
+    ))
+
+
+@dataclass(frozen=True)
+class MultiModeOptimizationResult:
+    efficiency: tuple[OptimizationResult, ...]
+    power: tuple[OptimizationResult, ...]
+    pareto: tuple[OptimizerCandidate, ...]
+    candidates: tuple[OptimizerCandidate, ...]
+
+
+@dataclass(frozen=True)
+class FinalSelection:
+    objective_mode: OptimizationMode
+    stage_count: int | None
+    candidate: OptimizerCandidate
+    alternatives: tuple[OptimizerCandidate, ...]
+    cfd_status: str = "not_requested"
+    validation_status: str = "provisional_meanline"
+
+
+def _selectable_candidates(
+    candidates: Sequence[OptimizerCandidate],
+    stage_count: int | None = None,
+) -> tuple[OptimizerCandidate, ...]:
+    if stage_count is not None and stage_count not in (1, 2):
+        raise ValueError(f"unsupported stage count: {stage_count}")
+    selectable = [
+        candidate
+        for candidate in candidates
+        if candidate.status == CandidateStatus.FEASIBLE
+        and candidate.converged is not False
+        and math.isfinite(candidate.efficiency)
+        and math.isfinite(candidate.power_w)
+        and (stage_count is None or candidate.stage_count == stage_count)
+    ]
+    return tuple(selectable)
+
+
+def _candidate_key(candidate: OptimizerCandidate) -> tuple[object, ...]:
+    return (
+        candidate.stage_count,
+        candidate.candidate_id,
+        candidate.variables,
+    )
+
+
+def select_final_candidate(
+    candidates: Sequence[OptimizerCandidate],
+    objective_mode: OptimizationMode,
+    stage_count: int | None = None,
+) -> FinalSelection:
+    if objective_mode not in ("efficiency", "power", "pareto"):
+        raise ValueError(
+            f"objective_mode must be efficiency, power, or pareto, got {objective_mode}"
+        )
+    selectable = _selectable_candidates(candidates, stage_count)
+    if not selectable:
+        raise ValueError("no feasible converged candidate is available for final selection")
+
+    if objective_mode == "efficiency":
+        selected = max(selectable, key=lambda candidate: candidate.efficiency)
+    elif objective_mode == "power":
+        selected = max(selectable, key=lambda candidate: candidate.power_w)
+    else:
+        frontier = pareto_frontier(selectable)
+        if not frontier:
+            raise ValueError("no Pareto candidate is available for final selection")
+        efficiency_values = [candidate.efficiency for candidate in frontier]
+        power_values = [candidate.power_w for candidate in frontier]
+        efficiency_range = max(efficiency_values) - min(efficiency_values)
+        power_range = max(power_values) - min(power_values)
+        selected = min(
+            frontier,
+            key=lambda candidate: (
+                (
+                    (candidate.efficiency - min(efficiency_values)) / efficiency_range
+                    - 0.5
+                ) ** 2
+                if efficiency_range
+                else 0.0
+            )
+            + (
+                (
+                    (candidate.power_w - min(power_values)) / power_range
+                    - 0.5
+                ) ** 2
+                if power_range
+                else 0.0
+            ),
+        )
+
+    alternatives = tuple(
+        candidate
+        for candidate in selectable
+        if _candidate_key(candidate) != _candidate_key(selected)
+    )
+    return FinalSelection(
+        objective_mode=objective_mode,
+        stage_count=stage_count,
+        candidate=selected,
+        alternatives=alternatives,
+        cfd_status="not_requested",
+        validation_status="provisional_meanline",
+    )
+
+
+def optimize_turbine_modes(
+    stage_counts: tuple[int, ...] = (1, 2),
+    seed: int = 1,
+    workers: int = 1,
+    max_generations: int = MAX_GENERATIONS,
+    bounds: VariableBounds = VariableBounds(),
+) -> MultiModeOptimizationResult:
+    """Run efficiency and power searches across requested stage counts and combine their Pareto frontier."""
+    efficiency_results = []
+    power_results = []
+    candidates = []
+    for stage_count in stage_counts:
+        if stage_count not in (1, 2):
+            raise ValueError(f"unsupported stage count: {stage_count}")
+        space = DesignSpace(stage_count=stage_count, bounds=bounds)
+        efficiency_result = optimize_turbine(
+            space,
+            seed=seed,
+            workers=workers,
+            max_generations=max_generations,
+            mode="efficiency",
+        )
+        power_result = optimize_turbine(
+            space,
+            seed=seed,
+            workers=workers,
+            max_generations=max_generations,
+            mode="power",
+        )
+        efficiency_results.append(efficiency_result)
+        power_results.append(power_result)
+        candidates.extend(efficiency_result.candidates)
+        candidates.extend(power_result.candidates)
+    unique_candidates = tuple({
+        (candidate.stage_count, candidate.variables): candidate
+        for candidate in candidates
+    }.values())
+    return MultiModeOptimizationResult(
+        efficiency=tuple(efficiency_results),
+        power=tuple(power_results),
+        pareto=pareto_frontier(unique_candidates),
+        candidates=unique_candidates,
+    )
+
+
+def optimizer_candidate_record(candidate: OptimizerCandidate) -> dict[str, object]:
+    return {
+        "candidate_id": candidate.candidate_id,
+        "stage_count": candidate.stage_count,
+        "status": candidate.status.value,
+        "efficiency": candidate.efficiency,
+        "power_w": candidate.power_w,
+        "variables": list(candidate.variables),
+        "converged": candidate.converged,
+        "error": candidate.error,
+        "cfd_status": candidate.cfd_status,
+        "constraint_names": [constraint.name for constraint in candidate.constraints],
+    }
+
+
+def optimizer_run_record(result: MultiModeOptimizationResult) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "modes": ("efficiency", "power", "pareto"),
+        "stage_counts": tuple(sorted({candidate.stage_count for candidate in result.candidates})),
+        "cfd_status": "preparation_only",
+        "candidates": [
+            optimizer_candidate_record(candidate)
+            for candidate in result.candidates
+        ],
+        "pareto": [
+            optimizer_candidate_record(candidate)
+            for candidate in result.pareto
+        ],
+    }
+
+
+def export_optimizer_run_record(result: MultiModeOptimizationResult, path: str | Path) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(optimizer_run_record(result), indent=2),
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def final_selection_record(selection: FinalSelection) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "objective_mode": selection.objective_mode,
+        "stage_count": selection.stage_count,
+        "validation_status": selection.validation_status,
+        "cfd_status": selection.cfd_status,
+        "selected_candidate": optimizer_candidate_record(selection.candidate),
+        "alternative_candidates": [
+            optimizer_candidate_record(candidate)
+            for candidate in selection.alternatives
+        ],
+        "limitations": [
+            "Meanline/loss/geometry result is provisional until CFD validation.",
+            "Cooling and metal-temperature feasibility are not assessed.",
+            "AMBRA testing is not assessed.",
+        ],
+    }
+
+
+def export_final_selection_record(selection: FinalSelection, path: str | Path) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(final_selection_record(selection), indent=2),
+        encoding="utf-8",
+    )
+    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +760,7 @@ def print_stage_count_comparison(results: Sequence[OptimizationResult]) -> None:
 if __name__ == "__main__":
     results = []
     for stage_count in (1, 2):
-        result = optimize_turbine(DesignSpace(stage_count), workers=-1)
+        result = optimize_turbine(DesignSpace(stage_count), mode="efficiency", workers=-1)
         print_optimization_summary(result)
         print()
         results.append(result)

@@ -12,6 +12,7 @@ import numpy as np
 from Constraints.boundary_conditions import boundary_conditions
 from Pipeline.Meanline.gas_props import GAS
 from Pipeline.Meanline.solve_meanline import MeanlineResult
+from Pipeline.RadialEquilibrium.radial_equilibrium_solver import SpanPosition, SpanwiseFlow
 
 RowKind = Literal["stator", "rotor"]
 
@@ -113,6 +114,29 @@ class RowGeometry:
     tip_radius_exit: float
     tip_clearance: float = 0.0  # m, unshrouded
 
+    def __post_init__(self) -> None:
+        for name in (
+            "pitch_chord",
+            "chord",
+            "axial_chord",
+            "height",
+            "hub_radius_exit",
+            "tip_radius_exit",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive, got {value}")
+        for name in ("max_thickness_chord", "trailing_edge_throat", "hub_tip_ratio_inlet"):
+            value = getattr(self, name)
+            if not math.isfinite(value):
+                raise ValueError(f"{name} must be finite, got {value}")
+        if not math.isfinite(self.inlet_metal_angle):
+            raise ValueError(f"inlet_metal_angle must be finite, got {self.inlet_metal_angle}")
+        if not math.isfinite(self.tip_clearance) or self.tip_clearance < 0:
+            raise ValueError(f"tip_clearance must be finite and nonnegative, got {self.tip_clearance}")
+        if self.tip_radius_exit <= self.hub_radius_exit:
+            raise ValueError("tip_radius_exit must exceed hub_radius_exit")
+
 
 @dataclass(frozen=True)
 class RowFlow:
@@ -127,6 +151,58 @@ class RowFlow:
     exit_static_pressure: float
     reynolds: float  # chord-based, at row exit
     gamma: float
+
+    def __post_init__(self) -> None:
+        for name in (
+            "inlet_angle",
+            "exit_angle",
+            "inlet_mach",
+            "exit_mach",
+            "inlet_static_pressure",
+            "exit_static_pressure",
+            "reynolds",
+            "gamma",
+        ):
+            if not math.isfinite(getattr(self, name)):
+                raise ValueError(f"{name} must be finite")
+        if self.inlet_mach < 0:
+            raise ValueError(f"inlet_mach must be nonnegative, got {self.inlet_mach}")
+        if self.exit_mach <= 0:
+            raise ValueError(f"exit_mach must be positive, got {self.exit_mach}")
+        if self.inlet_static_pressure <= 0 or self.exit_static_pressure <= 0:
+            raise ValueError("row static pressures must be positive")
+        if self.reynolds <= 0:
+            raise ValueError(f"reynolds must be positive, got {self.reynolds}")
+        if self.gamma <= 1:
+            raise ValueError(f"gamma must exceed 1, got {self.gamma}")
+
+
+@dataclass(frozen=True)
+class RowLossInputs:
+    """Validated row package passed from geometry and meanline modules to the loss model."""
+
+    stage_index: int
+    row_kind: RowKind
+    reference_frame: Literal["absolute", "rotor_relative"]
+    span_location: Literal["hub", "midspan", "tip"]
+    geometry: RowGeometry
+    flow: RowFlow
+
+    def __post_init__(self) -> None:
+        if isinstance(self.stage_index, bool) or not isinstance(self.stage_index, int) or self.stage_index < 1:
+            raise ValueError(f"stage_index must be a positive integer, got {self.stage_index}")
+        if self.row_kind not in ("stator", "rotor"):
+            raise ValueError(f"row_kind must be 'stator' or 'rotor', got {self.row_kind}")
+        if self.reference_frame not in ("absolute", "rotor_relative"):
+            raise ValueError(f"unsupported reference_frame, got {self.reference_frame}")
+        if self.span_location not in ("hub", "midspan", "tip"):
+            raise ValueError(f"unsupported span_location, got {self.span_location}")
+        if self.flow.kind != self.row_kind:
+            raise ValueError("row kind must match the row flow")
+        if self.reference_frame == "absolute" and self.row_kind != "stator":
+            raise ValueError("absolute frame row inputs are valid only for a stator")
+        if self.reference_frame == "rotor_relative" and self.row_kind != "rotor":
+            raise ValueError("rotor-relative frame row inputs are valid only for a rotor")
 
 
 @dataclass(frozen=True)
@@ -146,6 +222,30 @@ class RowLoss:
     reynolds_correction: float  # f_Re
     supersonic_correction: float  # f_Ma
     chart_warnings: tuple[str, ...] = ()
+    profile_base: float = 0.0
+    compressibility_increment: float = 0.0
+    reynolds_increment: float = 0.0
+
+    @property
+    def incremental_pressure_components(self) -> tuple[tuple[str, float], ...]:
+        profile_base = self.profile_base if self.profile_base else self.profile
+        return (
+            ("profile_base", profile_base),
+            ("compressibility_increment", self.compressibility_increment),
+            ("reynolds_increment", self.reynolds_increment),
+            ("hub_shock", self.hub_shock),
+            ("secondary", self.secondary),
+            ("trailing_edge", self.trailing_edge),
+            ("supersonic_increment", self.supersonic),
+        )
+
+    @property
+    def incremental_pressure_total(self) -> float:
+        return math.fsum(value for _, value in self.incremental_pressure_components)
+
+    @property
+    def accounting_residual(self) -> float:
+        return self.incremental_pressure_total - self.total
 
 
 @dataclass(frozen=True)
@@ -156,6 +256,48 @@ class StageEfficiency:
     total_to_total: float
     total_to_static: float
     tip_clearance_debit: float  # fractional efficiency reduction
+
+
+MachRegime = Literal["subsonic", "transonic", "supersonic"]
+
+
+@dataclass(frozen=True)
+class MachAssessment:
+    """Mach value and regime at a named station and reference frame."""
+
+    station_id: str
+    frame: Literal["absolute", "rotor_relative"]
+    mach: float
+    regime: MachRegime
+    source: Literal["meanline_baseline", "radial_evidence"]
+
+
+@dataclass(frozen=True)
+class SpanLossProxy:
+    """Preliminary empirical loss estimate using spanwise Mach and midspan geometry."""
+
+    row_kind: RowKind
+    span_location: Literal["hub", "midspan", "tip"]
+    loss: RowLoss
+
+
+@dataclass(frozen=True)
+class SpanTransonicAssessment:
+    """Transonic evidence and preliminary row-loss proxies at one span position."""
+
+    span_location: Literal["hub", "midspan", "tip"]
+    span_fraction: float
+    mach_values: tuple[MachAssessment, ...]
+    stator_proxy: SpanLossProxy
+    rotor_proxy: SpanLossProxy
+
+
+@dataclass(frozen=True)
+class TransonicAssessment:
+    """Complete hub/midspan/tip transonic assessment for one stage."""
+
+    stage_index: int
+    spans: tuple[SpanTransonicAssessment, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +466,10 @@ def row_loss(geometry: RowGeometry, flow: RowFlow) -> RowLoss:
     reynolds_factor = reynolds_correction(flow.reynolds)
     supersonic_factor = supersonic_profile_factor(flow.exit_mach)
     ainley_mathieson_loss = ainley_mathieson_profile_loss(geometry, inlet_metal_angle, exit_angle, warnings)
-    profile = KO_DESIGN_LEVEL_FACTOR * KO_PROFILE_REDUCTION * ainley_mathieson_loss * mach_correction * reynolds_factor
+    profile_base = KO_DESIGN_LEVEL_FACTOR * KO_PROFILE_REDUCTION * ainley_mathieson_loss
+    compressibility_increment = profile_base * (mach_correction - 1)
+    reynolds_increment = profile_base * mach_correction * (reynolds_factor - 1)
+    profile = profile_base + compressibility_increment + reynolds_increment
     hub_shock = KO_DESIGN_LEVEL_FACTOR * hub_shock_loss(geometry, flow, warnings) * reynolds_factor
     supersonic = (supersonic_factor - 1) * (profile + hub_shock)
 
@@ -332,7 +477,15 @@ def row_loss(geometry: RowGeometry, flow: RowFlow) -> RowLoss:
     trailing_edge = trailing_edge_loss(geometry.trailing_edge_throat, inlet_metal_angle, exit_angle,
                                        flow.exit_mach, flow.gamma, warnings)
 
-    total = profile + hub_shock + secondary + trailing_edge + supersonic
+    total = math.fsum((
+        profile_base,
+        compressibility_increment,
+        reynolds_increment,
+        hub_shock,
+        secondary,
+        trailing_edge,
+        supersonic,
+    ))
     return RowLoss(
         kind=flow.kind,
         profile=profile,
@@ -347,7 +500,170 @@ def row_loss(geometry: RowGeometry, flow: RowFlow) -> RowLoss:
         reynolds_correction=reynolds_factor,
         supersonic_correction=supersonic_factor,
         chart_warnings=tuple(warnings),
+        profile_base=profile_base,
+        compressibility_increment=compressibility_increment,
+        reynolds_increment=reynolds_increment,
     )
+
+
+def classify_mach(mach: float) -> MachRegime:
+    if mach < 0.9:
+        return "subsonic"
+    if mach <= 1.0:
+        return "transonic"
+    return "supersonic"
+
+
+def _span_row_proxy(
+    meanline: MeanlineResult,
+    span: SpanPosition,
+    span_location: Literal["hub", "midspan", "tip"],
+    row_kind: RowKind,
+    airfoil: AirfoilParams,
+) -> SpanLossProxy:
+    if row_kind == "stator":
+        geometry = row_geometry(
+            airfoil,
+            meanline,
+            height=meanline.blade_height_2,
+            inlet_angle=meanline.alpha_1,
+            exit_angle=span.stator_exit.absolute_angle,
+            hub_diameter_exit=meanline.D_hub_2,
+            tip_diameter_exit=meanline.D_tip_2,
+        )
+        flow = RowFlow(
+            kind="stator",
+            inlet_angle=meanline.alpha_1,
+            exit_angle=span.stator_exit.absolute_angle,
+            inlet_mach=meanline.M_1,
+            exit_mach=span.stator_exit.mach,
+            inlet_static_pressure=meanline.P_01 / stagnation_pressure_ratio(
+                meanline.M_1,
+                meanline.inlet_air_state.gamma if meanline.inlet_air_state is not None else GAS.gamma,
+            ),
+            exit_static_pressure=span.stator_exit.static_pressure,
+            reynolds=(
+                span.stator_exit.density
+                * span.stator_exit.absolute_speed
+                * geometry.chord
+                / span.stator_exit.viscosity_pa_s
+            ),
+            gamma=span.stator_exit.gamma,
+        )
+    else:
+        geometry = row_geometry(
+            airfoil,
+            meanline,
+            height=meanline.blade_height_3,
+            inlet_angle=span.stator_exit.relative_angle,
+            exit_angle=span.rotor_exit.relative_angle,
+            hub_diameter_exit=meanline.D_hub_3,
+            tip_diameter_exit=meanline.D_tip_3,
+            tip_clearance=boundary_conditions.rotor_tip_clearance_ratio * meanline.blade_height_3,
+        )
+        flow = RowFlow(
+            kind="rotor",
+            inlet_angle=span.stator_exit.relative_angle,
+            exit_angle=span.rotor_exit.relative_angle,
+            inlet_mach=span.stator_exit.relative_mach,
+            exit_mach=span.rotor_exit.relative_mach,
+            inlet_static_pressure=span.stator_exit.static_pressure,
+            exit_static_pressure=span.rotor_exit.static_pressure,
+            reynolds=(
+                span.rotor_exit.density
+                * span.rotor_exit.relative_speed
+                * geometry.chord
+                / span.rotor_exit.viscosity_pa_s
+            ),
+            gamma=span.rotor_exit.gamma,
+        )
+    return SpanLossProxy(
+        row_kind=row_kind,
+        span_location=span_location,
+        loss=row_loss(geometry, flow),
+    )
+
+
+def assess_transonic(
+    meanline: MeanlineResult,
+    spanwise: SpanwiseFlow,
+    stator_airfoil: AirfoilParams,
+    rotor_airfoil: AirfoilParams,
+    stage_index: int = 1,
+) -> TransonicAssessment:
+    """Build hub/midspan/tip Mach evidence and preliminary empirical shock-loss proxies."""
+    spans: list[SpanTransonicAssessment] = []
+    for span_location, span_fraction, span in (
+        ("hub", 0.0, spanwise.hub),
+        ("midspan", 0.5, spanwise.midspan),
+        ("tip", 1.0, spanwise.tip),
+    ):
+        mach_values = (
+            MachAssessment(
+                station_id=f"({stage_index}, 2)",
+                frame="absolute",
+                mach=span.stator_exit.mach,
+                regime=classify_mach(span.stator_exit.mach),
+                source="radial_evidence",
+            ),
+            MachAssessment(
+                station_id=f"({stage_index}, 2)",
+                frame="rotor_relative",
+                mach=span.stator_exit.relative_mach,
+                regime=classify_mach(span.stator_exit.relative_mach),
+                source="radial_evidence",
+            ),
+            MachAssessment(
+                station_id=f"({stage_index}, 3)",
+                frame="absolute",
+                mach=span.rotor_exit.mach,
+                regime=classify_mach(span.rotor_exit.mach),
+                source="radial_evidence",
+            ),
+            MachAssessment(
+                station_id=f"({stage_index}, 3)",
+                frame="rotor_relative",
+                mach=span.rotor_exit.relative_mach,
+                regime=classify_mach(span.rotor_exit.relative_mach),
+                source="radial_evidence",
+            ),
+        )
+        spans.append(SpanTransonicAssessment(
+            span_location=span_location,
+            span_fraction=span_fraction,
+            mach_values=mach_values,
+            stator_proxy=_span_row_proxy(
+                meanline,
+                span,
+                span_location,
+                "stator",
+                stator_airfoil,
+            ),
+            rotor_proxy=_span_row_proxy(
+                meanline,
+                span,
+                span_location,
+                "rotor",
+                rotor_airfoil,
+            ),
+        ))
+    return TransonicAssessment(stage_index=stage_index, spans=tuple(spans))
+
+
+def print_transonic_assessment(assessment: TransonicAssessment) -> None:
+    print(f"Transonic assessment Stage {assessment.stage_index}")
+    print(f"{'Span':<10}{'Station':>10}{'Frame':>18}{'Mach':>10}{'Regime':>12}")
+    print("-" * 60)
+    for span in assessment.spans:
+        for mach_value in span.mach_values:
+            print(
+                f"{span.span_location:<10}"
+                f"{mach_value.station_id:>10}"
+                f"{mach_value.frame:>18}"
+                f"{mach_value.mach:10.3f}"
+                f"{mach_value.regime:>12}"
+            )
+    print("Preliminary span loss proxies use midspan geometry and are not fed back into the meanline.")
 
 
 # ---------------------------------------------------------------------------
@@ -374,14 +690,14 @@ def row_geometry(airfoil: AirfoilParams, meanline: MeanlineResult, height: float
     )
 
 
-def stator_losses(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRFOIL) -> RowLoss:
-    """Kacker-Okapuu loss of the stator, from the stage inlet state to the stator exit."""
+def stator_row_inputs(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRFOIL,
+                      stage_index: int = 1) -> RowLossInputs:
+    """Build the validated midspan stator loss package in the absolute frame."""
     exit_density = (
         meanline.stator_exit_air_state.density_kg_m3
         if meanline.stator_exit_air_state is not None
         else static_density(meanline.P_s2, meanline.T_2)
     )
-
     geometry = row_geometry(
         airfoil,
         meanline,
@@ -413,17 +729,24 @@ def stator_losses(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRF
             else GAS.gamma
         ),
     )
-    return row_loss(geometry, flow)
+    return RowLossInputs(
+        stage_index=stage_index,
+        row_kind="stator",
+        reference_frame="absolute",
+        span_location="midspan",
+        geometry=geometry,
+        flow=flow,
+    )
 
 
-def rotor_losses(meanline: MeanlineResult, airfoil: AirfoilParams = ROTOR_AIRFOIL) -> RowLoss:
-    """Kacker-Okapuu loss of the rotor, in the relative frame."""
+def rotor_row_inputs(meanline: MeanlineResult, airfoil: AirfoilParams = ROTOR_AIRFOIL,
+                     stage_index: int = 1) -> RowLossInputs:
+    """Build the validated midspan rotor loss package in the rotor-relative frame."""
     exit_density = (
         meanline.rotor_exit_air_state.density_kg_m3
         if meanline.rotor_exit_air_state is not None
         else static_density(meanline.P_s3, meanline.T_3)
     )
-
     geometry = row_geometry(
         airfoil,
         meanline,
@@ -453,7 +776,28 @@ def rotor_losses(meanline: MeanlineResult, airfoil: AirfoilParams = ROTOR_AIRFOI
             else GAS.gamma
         ),
     )
-    return row_loss(geometry, flow)
+    return RowLossInputs(
+        stage_index=stage_index,
+        row_kind="rotor",
+        reference_frame="rotor_relative",
+        span_location="midspan",
+        geometry=geometry,
+        flow=flow,
+    )
+
+
+def stator_losses(meanline: MeanlineResult, airfoil: AirfoilParams = STATOR_AIRFOIL,
+                  stage_index: int = 1) -> RowLoss:
+    """Kacker-Okapuu loss of the stator, from the stage inlet state to the stator exit."""
+    row_inputs = stator_row_inputs(meanline, airfoil, stage_index)
+    return row_loss(row_inputs.geometry, row_inputs.flow)
+
+
+def rotor_losses(meanline: MeanlineResult, airfoil: AirfoilParams = ROTOR_AIRFOIL,
+                 stage_index: int = 1) -> RowLoss:
+    """Kacker-Okapuu loss of the rotor, in the relative frame."""
+    row_inputs = rotor_row_inputs(meanline, airfoil, stage_index)
+    return row_loss(row_inputs.geometry, row_inputs.flow)
 
 
 def stage_efficiency(meanline: MeanlineResult, rotor: RowLoss) -> StageEfficiency:
@@ -470,8 +814,24 @@ def stage_efficiency(meanline: MeanlineResult, rotor: RowLoss) -> StageEfficienc
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
-BREAKDOWN_FIELDS = ("profile", "hub_shock", "secondary", "trailing_edge", "supersonic", "total", "kinetic_loss",
-                    "tip_efficiency_debit", "mach_correction", "reynolds_correction", "supersonic_correction")
+BREAKDOWN_FIELDS = (
+    "profile_base",
+    "compressibility_increment",
+    "reynolds_increment",
+    "profile",
+    "hub_shock",
+    "secondary",
+    "trailing_edge",
+    "supersonic",
+    "total",
+    "kinetic_loss",
+)
+BREAKDOWN_METRICS = (
+    "tip_efficiency_debit",
+    "mach_correction",
+    "reynolds_correction",
+    "supersonic_correction",
+)
 
 
 def print_breakdown(row_losses: Sequence[RowLoss], names: Sequence[str] | None = None) -> None:
@@ -479,7 +839,20 @@ def print_breakdown(row_losses: Sequence[RowLoss], names: Sequence[str] | None =
     print(f"{'Loss component':<22}" + "".join(f"{name:>12}" for name in names))
     print("-" * (22 + 12 * len(names)))
     for field_name in BREAKDOWN_FIELDS:
-        print(f"{field_name:<22}" + "".join(f"{getattr(loss, field_name):12.4f}" for loss in row_losses))
+        if field_name == "profile":
+            values = [loss.profile for loss in row_losses]
+        elif field_name == "profile_base":
+            values = [loss.profile_base if loss.profile_base else loss.profile for loss in row_losses]
+        else:
+            values = [getattr(loss, field_name) for loss in row_losses]
+        print(f"{field_name:<22}" + "".join(f"{value:12.4f}" for value in values))
+    print(f"{'accounting_residual':<22}" + "".join(
+        f"{loss.accounting_residual:12.4f}" for loss in row_losses
+    ))
+    for field_name in BREAKDOWN_METRICS:
+        print(f"{field_name:<22}" + "".join(
+            f"{getattr(loss, field_name):12.4f}" for loss in row_losses
+        ))
     for name, loss in zip(names, row_losses):
         for warning in loss.chart_warnings:
             print(f"WARNING ({name}): {warning}")

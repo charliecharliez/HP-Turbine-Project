@@ -16,6 +16,13 @@ from Helpers.turbine_reporting import (
 from Helpers.stage_solver import Constraint, StageSolution
 from Helpers.turbine_solver import TurbineSolution
 from Pipeline.Airfoil.airfoil import BladeRow
+from Pipeline.Losses.losses_solver import (
+    MachAssessment,
+    RowLoss,
+    SpanLossProxy,
+    SpanTransonicAssessment,
+    TransonicAssessment,
+)
 
 RUNS_DIRECTORY = Path(__file__).resolve().parents[2] / "runs"
 CSV_FIELDS = (
@@ -100,6 +107,76 @@ def _row_snapshot(row: BladeRow) -> JsonObject:
     }
 
 
+def _row_loss_snapshot(loss: RowLoss) -> JsonObject:
+    components: dict[str, JsonValue] = {
+        name: value
+        for name, value in loss.incremental_pressure_components
+    }
+    components["coolant_mixing"] = None
+    return {
+        "row_kind": loss.kind,
+        "pressure_loss_components": components,
+        "profile_final": loss.profile,
+        "pressure_loss_total": loss.total,
+        "incremental_pressure_total": loss.incremental_pressure_total,
+        "accounting_residual": loss.accounting_residual,
+        "kinetic_loss": loss.kinetic_loss,
+        "tip_efficiency_debit": loss.tip_efficiency_debit,
+        "mach_correction": loss.mach_correction,
+        "reynolds_correction": loss.reynolds_correction,
+        "supersonic_correction": loss.supersonic_correction,
+        "chart_warnings": list(loss.chart_warnings),
+        "coolant_mixing_status": "deferred",
+    }
+
+
+def _mach_assessment_snapshot(mach: MachAssessment) -> JsonObject:
+    return {
+        "station_id": mach.station_id,
+        "frame": mach.frame,
+        "mach": mach.mach,
+        "regime": mach.regime,
+        "source": mach.source,
+    }
+
+
+def _span_loss_proxy_snapshot(proxy: SpanLossProxy) -> JsonObject:
+    return {
+        "row_kind": proxy.row_kind,
+        "span_location": proxy.span_location,
+        "source": "preliminary_spanwise_proxy",
+        "loss": _row_loss_snapshot(proxy.loss),
+    }
+
+
+def _span_assessment_snapshot(span: SpanTransonicAssessment) -> JsonObject:
+    return {
+        "span_location": span.span_location,
+        "span_fraction": span.span_fraction,
+        "mach_values": [
+            _mach_assessment_snapshot(mach)
+            for mach in span.mach_values
+        ],
+        "stator_proxy": _span_loss_proxy_snapshot(span.stator_proxy),
+        "rotor_proxy": _span_loss_proxy_snapshot(span.rotor_proxy),
+    }
+
+
+def _transonic_assessment_snapshot(assessment: TransonicAssessment) -> JsonObject:
+    return {
+        "stage_index": assessment.stage_index,
+        "spans": [
+            _span_assessment_snapshot(span)
+            for span in assessment.spans
+        ],
+        "limitations": (
+            "Kacker-Okapuu is empirical and does not resolve trailing-edge shock geometry.",
+            "Span proxies use midspan geometry until validated span geometry is available.",
+            "Proxy losses are not fed back into the meanline.",
+        ),
+    }
+
+
 def _stage_comparison_snapshot(
     stage: StageSolution,
     stage_index: int,
@@ -134,6 +211,9 @@ def _stage_comparison_snapshot(
         "feasible": stage.feasible,
         "stator_row": _row_snapshot(final.stator),
         "rotor_row": _row_snapshot(final.rotor),
+        "stator_loss": _row_loss_snapshot(final.stator_loss),
+        "rotor_loss": _row_loss_snapshot(final.rotor_loss),
+        "transonic_assessment": _transonic_assessment_snapshot(final.transonic_assessment),
         "constraints": constraints,
     }
 

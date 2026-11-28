@@ -8,6 +8,8 @@ from typing import Literal, TypeAlias
 RowKind: TypeAlias = Literal["stator", "rotor"]
 LossKind: TypeAlias = Literal[
     "profile",
+    "profile_reynolds_correction",
+    "profile_compressibility_correction",
     "transonic_shock",
     "secondary",
     "trailing_edge",
@@ -278,6 +280,8 @@ class LossComponent:
     def __post_init__(self) -> None:
         if self.kind not in (
             "profile",
+            "profile_reynolds_correction",
+            "profile_compressibility_correction",
             "transonic_shock",
             "secondary",
             "trailing_edge",
@@ -285,7 +289,10 @@ class LossComponent:
             "coolant_mixing",
         ):
             raise ValueError(f"unsupported loss kind: {self.kind!r}")
-        _validate_nonnegative(self.coefficient, "coefficient")
+        if self.kind in ("profile_reynolds_correction", "profile_compressibility_correction"):
+            _validate_finite(self.coefficient, "coefficient")
+        else:
+            _validate_nonnegative(self.coefficient, "coefficient")
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ from Pipeline.Losses.losses_solver import (
     hub_shock_loss,
     load_chart,
     reynolds_correction,
+    row_loss,
     secondary_loss,
     stagnation_pressure_ratio,
     supersonic_profile_factor,
@@ -209,6 +210,52 @@ class FoundationRepairTests(unittest.TestCase):
             reynolds_correction(0.0)
         with self.assertRaises(ValueError):
             compressibility_correction(0.2, 0.0)
+
+    def test_row_loss_reconciles_incremental_components_once(self) -> None:
+        geometry = RowGeometry(
+            pitch_chord=0.8,
+            chord=0.4,
+            axial_chord=0.3,
+            height=0.2,
+            max_thickness_chord=0.2,
+            trailing_edge_throat=0.08,
+            inlet_metal_angle=20.0,
+            hub_tip_ratio_inlet=0.7,
+            hub_radius_exit=0.3,
+            tip_radius_exit=0.4,
+            tip_clearance=0.002,
+        )
+        subsonic_flow = RowFlow(
+            kind="stator",
+            inlet_angle=20.0,
+            exit_angle=-40.0,
+            inlet_mach=0.7,
+            exit_mach=0.9,
+            inlet_static_pressure=4.0,
+            exit_static_pressure=3.0,
+            reynolds=5e5,
+            gamma=1.4,
+        )
+        loss = row_loss(geometry, subsonic_flow)
+
+        self.assertEqual(loss.supersonic, 0.0)
+        self.assertEqual(loss.tip_efficiency_debit, 0.0)
+        self.assertAlmostEqual(loss.profile, (
+            loss.profile_base
+            + loss.compressibility_increment
+            + loss.reynolds_increment
+        ))
+        self.assertAlmostEqual(loss.accounting_residual, 0.0, places=12)
+
+        transonic_flow = replace(subsonic_flow, kind="rotor", exit_mach=1.2)
+        rotor_loss = row_loss(replace(
+            geometry,
+            tip_clearance=0.002,
+        ), transonic_flow)
+
+        self.assertGreater(rotor_loss.supersonic, 0.0)
+        self.assertGreater(rotor_loss.tip_efficiency_debit, 0.0)
+        self.assertAlmostEqual(rotor_loss.accounting_residual, 0.0, places=12)
 
     def test_tip_efficiency_debit_matches_unshrouded_rotor_correlation(self) -> None:
         geometry = RowGeometry(

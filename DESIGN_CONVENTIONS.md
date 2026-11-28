@@ -57,3 +57,18 @@ Use turbine work as positive extracted work. For a stage or complete turbine:
 ## Compatibility with current modules
 
 The meanline prototype calls its absolute speed `v`, relative speed `w`, stores pressures in bar, and labels the current stations 2 and 3. The velocity-triangle module uses `C` and `W`, with positive tangential direction along blade rotation. Migrations must preserve those results while adapting names, signs, and units at well-defined boundaries; do not silently reinterpret an unsigned legacy angle as a signed angle.
+
+## Loss row inputs
+
+The Kacker-Okapuu loss boundary uses `RowLossInputs` to identify the stage,
+stator or rotor, absolute or rotor-relative frame, and span location. The
+current adapters supply validated midspan geometry and flow inputs; hub and tip
+loss packages can be added later without changing the row identity contract.
+
+## Transonic evidence
+
+Reporting labels Mach below 0.9 as subsonic, Mach from 0.9 through 1.0 as
+transonic, and Mach above 1.0 as supersonic. The preliminary span-loss proxy
+uses midspan geometry with radial-equilibrium span states and is not fed back
+into the meanline. It is empirical Kacker-Okapuu evidence, not a resolved
+trailing-edge shock geometry.

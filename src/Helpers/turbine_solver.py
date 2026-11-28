@@ -137,9 +137,10 @@ def rig_constraints(tested_rotor: MeanlineResult) -> tuple[Constraint, ...]:
 # ---------------------------------------------------------------------------
 # Solution
 # ---------------------------------------------------------------------------
-def stage_in_turbine(stage: StageDesign, inlet: StageInlet, exit_pressure: float) -> StageDesign:
+def stage_in_turbine(stage: StageDesign, inlet: StageInlet, exit_pressure: float,
+                     stage_index: int) -> StageDesign:
     inputs = replace(stage.inputs, pressure_ratio=inlet.P_0 / exit_pressure)
-    return replace(stage, inlet=inlet, inputs=inputs)
+    return replace(stage, stage_index=stage_index, inlet=inlet, inputs=inputs)
 
 
 def solve_stages_in_sequence(design: TurbineDesign, solve: Callable[[StageDesign], StageResult],
@@ -147,8 +148,11 @@ def solve_stages_in_sequence(design: TurbineDesign, solve: Callable[[StageDesign
     """Solve each stage from the previous stage's exit state down to its own exit pressure."""
     inlet = design.inlet
     results = []
-    for stage, exit_pressure in zip(design.stages, design.stage_exit_pressures()):
-        result = solve(stage_in_turbine(stage, inlet, exit_pressure))
+    for stage_index, (stage, exit_pressure) in enumerate(
+        zip(design.stages, design.stage_exit_pressures()),
+        start=1,
+    ):
+        result = solve(stage_in_turbine(stage, inlet, exit_pressure, stage_index))
         results.append(result)
         inlet = meanline_of(result).exit_state()
     return results
